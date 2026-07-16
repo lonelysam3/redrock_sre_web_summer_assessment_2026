@@ -1,0 +1,541 @@
+/* ================================================================
+   代码审计平台 — Catppuccin Mocha 风格主题
+   ================================================================
+
+   设计令牌（CSS 自定义属性）：
+     全局颜色、字体、间距等变量，方便统一修改。
+
+   布局层次：
+     - Header（顶部导航栏）
+     - Card（内容卡片，圆角 + 边框）
+     - Table（数据表格）
+     - Form（表单控件）
+     - Badge（标签/徽章）
+     - Stats（统计数字）
+     - AI Result（AI 分析结果区域）
+     - Vuln List（漏洞列表）
+
+   响应式断点：
+     - ≤768px: 移动端适配（单列布局）
+   ================================================================ */
+
+/* ---- CSS 变量（设计令牌） ---- */
+:root {
+    --bg: #1e1e2e;          /* 主背景色（深紫灰） */
+    --bg2: #181825;         /* 次背景色（更深） */
+    --surface: #313244;     /* 表面色（卡片内部背景） */
+    --overlay: #45475a;     /* 覆盖色（边框、分隔线） */
+    --text: #cdd6f4;        /* 主文字色（浅灰白） */
+    --subtext: #a6adc8;     /* 次要文字色（浅灰） */
+    --blue: #89b4fa;        /* 蓝色（链接、主按钮） */
+    --green: #a6e3a1;       /* 绿色（成功、低风险） */
+    --yellow: #f9e2af;      /* 黄色（警告、中风险） */
+    --red: #f38ba8;         /* 红色（危险、严重） */
+    --peach: #fab387;       /* 桃色（高/中高） */
+    --mauve: #cba6f7;       /* 紫色（未使用） */
+}
+
+/* ---- 全局重置 ---- */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #11111b;    /* 最深背景色，区分于卡片 */
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+/* 内容容器：居中对齐，最大宽度 1200px */
+.container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+
+/* ================================================================
+   Header（顶部导航栏）
+   ================================================================ */
+.header {
+    background: var(--bg);
+    border-bottom: 1px solid var(--overlay);
+    padding: 16px 0;
+    margin-bottom: 24px;
+}
+.header .container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.header h1 { font-size: 1.4em; }
+/* 标题链接（可点击返回首页） */
+.header h1 a { color: var(--text); text-decoration: none; }
+/* 导航链接 */
+.header nav a {
+    color: var(--subtext);
+    text-decoration: none;
+    margin-left: 16px;
+}
+.header nav a.active,
+.header nav a:hover { color: var(--blue); }
+
+/* ================================================================
+   Card（内容卡片）
+   ================================================================ */
+.card {
+    background: var(--bg);
+    border-radius: 12px;        /* 大圆角 */
+    padding: 24px;
+    margin-bottom: 20px;
+    border: 1px solid var(--overlay);
+}
+.card h2 { margin-bottom: 16px; font-size: 1.15em; }
+
+/* Flex 工具：横向排列 + 两端对齐 */
+.flex-between {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+/* ================================================================
+   Form（表单控件）
+   ================================================================ */
+.form-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;           /* 窄屏自动换行 */
+}
+.form-row input,
+.form-row select {
+    flex: 1;
+    min-width: 150px;          /* 防止过窄 */
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--overlay);
+    background: var(--bg2);
+    color: var(--text);
+    font-size: 0.95em;
+}
+.form-row input:focus,
+.form-row select:focus {
+    outline: none;
+    border-color: var(--blue);  /* 聚焦时高亮边框 */
+}
+
+/* ================================================================
+   Buttons（按钮）
+   ================================================================ */
+.btn {
+    display: inline-block;
+    padding: 8px 18px;
+    border-radius: 8px;
+    border: 1px solid var(--overlay);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.9em;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.15s;
+}
+.btn:hover { background: var(--overlay); }
+
+/* 主要按钮（蓝色） */
+.btn-primary {
+    background: var(--blue);
+    color: #11111b;
+    border-color: var(--blue);
+}
+.btn-primary:hover { opacity: 0.85; }
+
+/* 危险按钮（红色） */
+.btn-danger {
+    color: var(--red);
+    border-color: var(--red);
+}
+.btn-danger:hover {
+    background: var(--red);
+    color: #11111b;
+}
+
+/* 小号按钮 */
+.btn-sm { padding: 4px 12px; font-size: 0.8em; }
+
+/* ================================================================
+   Table（数据表格）
+   ================================================================ */
+.table {
+    width: 100%;
+    border-collapse: collapse;    /* 合并边框 */
+}
+.table th, .table td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--overlay);
+}
+.table th {
+    color: var(--subtext);
+    font-weight: 600;
+    font-size: 0.85em;
+    text-transform: uppercase;     /* 大写标题 */
+}
+.table a { color: var(--blue); text-decoration: none; }
+.table a:hover { text-decoration: underline; }
+.table code { font-size: 0.85em; color: var(--subtext); }
+
+/* ================================================================
+   Settings Form（设置页面表单）
+   ================================================================ */
+.form-group { margin-bottom: 20px; }
+.form-group label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 600;
+    color: var(--subtext);
+}
+.form-group input,
+.form-group select {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--overlay);
+    background: var(--bg2);
+    color: var(--text);
+    font-size: 0.95em;
+}
+.form-group input:focus,
+.form-group select:focus {
+    outline: none;
+    border-color: var(--blue);
+}
+.form-group small {
+    display: block;
+    margin-top: 4px;
+    color: var(--subtext);
+    font-size: 0.8em;
+}
+
+/* 输入行：输入框 + 按钮横向排列 */
+.input-row { display: flex; gap: 8px; }
+.input-row input { flex: 1; }
+
+/* 表单底部操作按钮区 */
+.form-actions { display: flex; gap: 10px; margin-top: 8px; }
+
+/* 快捷预设按钮区 */
+.presets {
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+}
+.preset-label { color: var(--subtext); }
+
+/* 描述性副标题 */
+.subtitle { color: var(--subtext); margin-bottom: 16px; }
+
+/* 状态消息（成功/失败提示） */
+.status-message {
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-top: 16px;
+}
+.status-message.success {
+    background: rgba(166, 227, 161, 0.15);  /* 绿色半透明背景 */
+    color: var(--green);
+}
+.status-message.error {
+    background: rgba(243, 139, 168, 0.15);  /* 红色半透明背景 */
+    color: var(--red);
+}
+
+/* ================================================================
+   Badges（标签/徽章）
+   ================================================================ */
+.badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;       /* 胶囊形状 */
+    font-size: 0.8em;
+    font-weight: 600;
+    background: var(--surface);
+    color: var(--text);
+}
+/* 不同颜色变体 */
+.badge-green   { background: var(--green);  color: #11111b; }
+.badge-yellow  { background: var(--yellow); color: #11111b; }
+.badge-red     { background: var(--red);    color: #11111b; }
+.badge-critical { background: var(--red);    color: #11111b; }
+.badge-high    { background: var(--peach);  color: #11111b; }
+.badge-medium  { background: var(--yellow); color: #11111b; }
+.badge-low     { background: var(--green);  color: #11111b; }
+
+/* ================================================================
+   Misc（杂项）
+   ================================================================ */
+/* 空状态提示 */
+.empty {
+    text-align: center;
+    padding: 40px;
+    color: var(--subtext);
+    font-style: italic;
+}
+/* 行内代码 */
+code {
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    background: var(--bg2);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+/* ================================================================
+   Upload（压缩包上传区域）
+   ================================================================ */
+.hint {
+    color: var(--subtext);
+    font-size: 0.85em;
+    margin-bottom: 12px;
+}
+
+.file-input-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 200px;
+}
+
+.file-input-wrapper input[type="file"] {
+    display: none;
+}
+
+.file-input-wrapper .btn-outline {
+    background: transparent;
+    border: 1px dashed var(--overlay);
+    color: var(--subtext);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.file-input-wrapper .btn-outline:hover {
+    border-color: var(--blue);
+    color: var(--blue);
+}
+
+.file-name {
+    color: var(--subtext);
+    font-size: 0.85em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 300px;
+}
+
+/* 上传状态提示 */
+.upload-status {
+    margin-top: 12px;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 0.9em;
+}
+
+.upload-status.uploading {
+    background: rgba(137, 180, 250, 0.15);
+    color: var(--blue);
+}
+
+.upload-status.success {
+    background: rgba(166, 227, 161, 0.15);
+    color: var(--green);
+}
+
+.upload-status.error {
+    background: rgba(243, 139, 168, 0.15);
+    color: var(--red);
+}
+
+.upload-status a {
+    color: var(--blue);
+    margin-left: 8px;
+}
+
+/* 来源标签 */
+.badge-upload {
+    background: var(--mauve);
+    color: #11111b;
+}
+
+.badge-local {
+    background: var(--surface);
+    color: var(--subtext);
+}
+
+/* ================================================================
+   Safe Result（无漏洞安全报告页）
+   ================================================================ */
+.safe-result { max-width: 900px; margin: 0 auto; }
+
+/* Hero 区域：绿色大图标 + 标题 */
+.safe-hero {
+    text-align: center;
+    padding: 48px 24px 32px;
+    background: var(--bg);
+    border-radius: 12px;
+    border: 2px solid rgba(166, 227, 161, 0.3);
+    margin-bottom: 20px;
+}
+.safe-icon { font-size: 4em; margin-bottom: 12px; }
+.safe-hero h2 { font-size: 1.6em; color: var(--green); margin-bottom: 8px; }
+.safe-subtitle { color: var(--subtext); font-size: 0.95em; }
+
+/* 统计卡片 */
+.safe-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+}
+.safe-stat {
+    background: var(--bg);
+    border-radius: 10px;
+    padding: 20px;
+    text-align: center;
+    border: 1px solid var(--overlay);
+}
+.safe-stat-num { font-size: 2.2em; font-weight: bold; color: var(--text); }
+.safe-stat-label { font-size: 0.8em; color: var(--subtext); margin-top: 4px; }
+
+/* 流水线阶段展示 */
+.safe-pipeline {
+    background: var(--bg);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+    border: 1px solid var(--overlay);
+}
+.safe-pipeline h3 { font-size: 1em; margin-bottom: 16px; color: var(--subtext); }
+.pipeline-stages {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.pipeline-stage {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 12px 20px;
+    text-align: center;
+    min-width: 130px;
+    border: 1px solid var(--overlay);
+    transition: all 0.3s;
+}
+.pipeline-stage.done {
+    border-color: var(--green);
+    background: rgba(166, 227, 161, 0.08);
+}
+.pipeline-stage .stage-icon { font-size: 1.4em; display: block; margin-bottom: 4px; }
+.pipeline-stage .stage-name { font-weight: bold; font-size: 0.85em; display: block; }
+.pipeline-stage .stage-desc { font-size: 0.75em; color: var(--subtext); display: block; }
+.pipeline-stage .stage-check { color: var(--green); font-weight: bold; font-size: 1.2em; }
+.pipeline-arrow { color: var(--green); font-size: 1.2em; font-weight: bold; }
+
+/* 已扫描文件列表 */
+.safe-files {
+    background: var(--bg);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+    border: 1px solid var(--overlay);
+}
+.safe-files h3 { font-size: 1em; margin-bottom: 12px; }
+.file-count { font-weight: normal; color: var(--subtext); font-size: 0.85em; }
+.file-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 4px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+.file-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+.file-item:hover { background: var(--surface); }
+.file-icon { font-size: 0.9em; flex-shrink: 0; }
+.file-path { font-size: 0.8em; color: var(--subtext); word-break: break-all; background: none; padding: 0; }
+.file-more { color: var(--subtext); font-style: italic; }
+
+/* 安全提示 */
+.safe-note {
+    background: rgba(137, 180, 250, 0.08);
+    border: 1px solid rgba(137, 180, 250, 0.2);
+    border-radius: 10px;
+    padding: 16px 20px;
+    font-size: 0.9em;
+    color: var(--subtext);
+}
+.safe-note p { margin-bottom: 8px; }
+.safe-note ul { margin-left: 20px; }
+.safe-note li { margin-bottom: 4px; }
+
+/* 扫描失败时间线 */
+.fail-timeline { display: flex; flex-direction: column; gap: 10px; }
+.fail-step {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--surface);
+    border-radius: 6px;
+    border-left: 3px solid var(--overlay);
+}
+.fail-step:nth-child(2) { border-left-color: var(--red); }
+.fail-step-icon { font-size: 1.1em; flex-shrink: 0; }
+.fail-step-label { color: var(--subtext); font-size: 0.85em; min-width: 60px; }
+.fail-step-value { color: var(--text); font-family: monospace; font-size: 0.85em; }
+
+/* 模型下拉列表 */
+.model-dropdown {
+    margin-top: 4px;
+    background: var(--bg2);
+    border: 1px solid var(--overlay);
+    border-radius: 8px;
+    max-height: 240px;
+    overflow-y: auto;
+}
+.model-option {
+    padding: 8px 14px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text);
+    border-bottom: 1px solid rgba(69, 71, 90, 0.3);
+    transition: background 0.1s;
+}
+.model-option:last-child { border-bottom: none; }
+.model-option:hover {
+    background: var(--blue);
+    color: #11111b;
+}
+
+/* ================================================================
+   Responsive（响应式 — 移动端适配）
+   ================================================================ */
+@media (max-width: 768px) {
+    /* 表单变为单列 */
+    .form-row { flex-direction: column; }
+    .form-row input, .form-row select, .form-row button { width: 100%; }
+
+    /* 卡片内布局也变单列 */
+    .flex-between { flex-direction: column; align-items: flex-start; }
+
+    /* 导航栏垂直排列 */
+    .header .container { flex-direction: column; gap: 8px; }
+
+    /* 统计卡片改为 3 列 */
+    .stats { grid-template-columns: repeat(3, 1fr); }
+}

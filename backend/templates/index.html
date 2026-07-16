@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>代码审计平台</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- ========== 顶部导航栏 ========== -->
+    <header class="header">
+        <div class="container">
+            <h1>🔍 代码审计平台</h1>
+            <nav>
+                <a href="/" class="active">项目</a>
+                <a href="/settings">⚙ 设置</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- ========== 上传压缩包创建项目 ========== -->
+        <section class="card">
+            <h2>📦 上传项目源码</h2>
+            <p class="hint">上传压缩包（zip、tar.gz、tar.bz2、tar），后端自动解压并进行安全扫描。不支持直接输入本地路径。</p>
+            <form id="upload-project-form" class="form-row" enctype="multipart/form-data">
+                <!-- 项目名称（可选） -->
+                <input type="text" name="name" placeholder="项目名称（可选，默认使用文件名）">
+                <!-- 文件选择 -->
+                <div class="file-input-wrapper">
+                    <input type="file" name="file" id="upload-file" accept=".zip,.tar,.gz,.bz2,.xz" required>
+                    <label for="upload-file" id="file-label" class="btn btn-outline">选择文件</label>
+                    <span id="file-name" class="file-name">未选择文件</span>
+                </div>
+                <!-- 编程语言（必选） -->
+                <select name="language" required>
+                    <option value="">选择语言</option>
+                    <option value="python">Python</option>
+                    <option value="c">C</option>
+                    <option value="cpp">C++</option>
+                    <option value="php">PHP</option>
+                </select>
+                <button type="submit" class="btn btn-primary">上传并扫描</button>
+            </form>
+            <!-- AI 自动分析开关（表单外独立行，通过 JS 关联） -->
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;margin-top:10px;">
+                <input type="checkbox" id="auto-ai-checkbox" checked style="accent-color:var(--blue);">
+                🤖 扫描后自动 AI 分析
+            </label>
+            <!-- 上传进度提示 -->
+            <div id="upload-status" class="upload-status" style="display:none;"></div>
+        </section>
+
+        <!-- ========== 项目列表 ========== -->
+        <section class="card">
+            <h2>项目列表</h2>
+            {% if projects %}
+            <!-- Jinja2 条件渲染：有项目时显示表格 -->
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>名称</th>
+                        <th>语言</th>
+                        <th>文件名</th>
+                        <th>创建时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in projects %}
+                    <!-- Jinja2 循环：遍历每个项目 -->
+                    <tr>
+                        <td>{{ p.id }}</td>
+                        <!-- 项目名可点击进入详情页 -->
+                        <td><a href="/project/{{ p.id }}">{{ p.name }}</a></td>
+                        <td><span class="badge">{{ p.language }}</span></td>
+                        <td><code>{{ p.original_filename or '-' }}</code></td>
+                        <!-- 格式化时间为 YYYY-MM-DD HH:MM -->
+                        <td>{{ p.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td>
+                            <!-- 删除按钮，调用 JS 函数 -->
+                            <button class="btn btn-sm btn-danger" onclick="deleteProject({{ p.id }})">删除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <!-- Jinja2 条件渲染：无项目时显示空状态提示 -->
+            <p class="empty">暂无项目，请创建第一个扫描项目</p>
+            {% endif %}
+        </section>
+    </main>
+
+    <script>
+        /**
+         * 上传压缩包表单处理
+         * ==================
+         * 1. 阻止默认表单提交
+         * 2. 使用 FormData + multipart/form-data 上传文件
+         * 3. POST 到 /api/projects/upload
+         * 4. 显示上传进度和结果
+         */
+        const uploadForm = document.getElementById('upload-project-form');
+        const uploadStatus = document.getElementById('upload-status');
+        const fileInput = document.getElementById('upload-file');
+        const fileName = document.getElementById('file-name');
+
+        // 文件选择时显示文件名
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                fileName.textContent = fileInput.files[0].name;
+            } else {
+                fileName.textContent = '未选择文件';
+            }
+        });
+
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            if (!fileInput.files.length) {
+                alert('请选择要上传的压缩包文件');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            // 客户端大小检查（100MB）
+            if (file.size > 100 * 1024 * 1024) {
+                alert('文件大小超过 100MB 上限');
+                return;
+            }
+
+            // 显示上传中状态
+            uploadStatus.style.display = 'block';
+            uploadStatus.className = 'upload-status uploading';
+            uploadStatus.textContent = '⏳ 正在上传并解压文件...';
+
+            const formData = new FormData(uploadForm);
+            formData.set('auto_scan', 'true');
+            // 同步外部复选框
+            formData.set('auto_ai', document.getElementById('auto-ai-checkbox').checked ? '1' : '0');
+
+            try {
+                const resp = await fetch('/api/projects/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await resp.json();
+
+                if (resp.ok) {
+                    uploadStatus.className = 'upload-status success';
+                    if (result.scan_id) {
+                        uploadStatus.innerHTML = `✅ 上传成功！项目 "${result.name}" 已创建，扫描中... <a href="/project/${result.id}">查看项目</a>`;
+                        // 3 秒后刷新页面
+                        setTimeout(() => location.reload(), 3000);
+                    } else {
+                        uploadStatus.innerHTML = `✅ 项目 "${result.name}" 已创建 <a href="/project/${result.id}">查看项目</a>`;
+                        setTimeout(() => location.reload(), 2000);
+                    }
+                } else {
+                    uploadStatus.className = 'upload-status error';
+                    uploadStatus.textContent = '❌ ' + (result.error || '上传失败');
+                }
+            } catch (err) {
+                uploadStatus.className = 'upload-status error';
+                uploadStatus.textContent = '❌ 网络错误: ' + err.message;
+            }
+        });
+
+        /**
+         * 删除项目
+         * ========
+         * 1. 弹出确认对话框
+         * 2. 发送 DELETE 请求到 /api/projects/<id>
+         * 3. 刷新页面
+         */
+        async function deleteProject(id) {
+            if (!confirm('确定删除此项目？关联的扫描数据也会被删除。')) return;
+            await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+            location.reload();
+        }
+    </script>
+</body>
+</html>

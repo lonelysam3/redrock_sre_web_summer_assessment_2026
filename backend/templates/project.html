@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ project.name }} — 代码审计平台</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- ========== 顶部导航栏（带项目名和返回按钮） ========== -->
+    <header class="header">
+        <div class="container">
+            <h1>🔍 <a href="/">{{ project.name }}</a></h1>
+            <nav>
+                <a href="/">← 返回</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- ========== 项目信息 + 扫描按钮 ========== -->
+        <div class="card">
+            <div class="flex-between">
+                <div>
+                    <strong>语言：</strong> <span class="badge">{{ project.language }}</span>
+                    {% if project.original_filename %}
+                    <strong>文件：</strong> <code>{{ project.original_filename }}</code>
+                    {% endif %}
+                </div>
+                <!-- 开始扫描按钮，触发异步扫描 + 轮询 -->
+                <button class="btn btn-primary" onclick="startScan()">开始扫描</button>
+            </div>
+        </div>
+
+        <!-- ========== 扫描历史列表 ========== -->
+        <section class="card">
+            <h2>扫描历史</h2>
+            {% if scans %}
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>状态</th>
+                        <th>发现漏洞</th>
+                        <th>开始时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in scans %}
+                    <!-- 遍历扫描任务 -->
+                    <tr>
+                        <td>#{{ s.id }}</td>
+                        <td>
+                            <!-- 根据状态显示不同颜色的徽章 -->
+                            {% if s.status == 'done' %}
+                            <span class="badge badge-green">完成</span>
+                            {% elif s.status == 'running' %}
+                            <span class="badge badge-yellow">扫描中...</span>
+                            {% elif s.status == 'analyzing' %}
+                            <span class="badge" style="background:var(--blue);color:#111">🤖 AI分析中</span>
+                            {% elif s.status == 'failed' %}
+                            <span class="badge badge-red">失败</span>
+                            {% else %}
+                            <span class="badge">{{ s.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ s.vulns_found }}</td>
+                        <td>{{ s.created_at.strftime('%Y-%m-%d %H:%M') if s.created_at else '-' }}</td>
+                        <td>
+                            <!-- 查看详细结果 -->
+                            <a href="/scan/{{ s.id }}" class="btn btn-sm">查看</a>
+                            <!-- 删除扫描记录 -->
+                            <button class="btn btn-sm btn-danger" onclick="deleteScan({{ s.id }})">删除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="empty">尚未进行过扫描</p>
+            {% endif %}
+        </section>
+    </main>
+
+    <script>
+        /**
+         * 开始扫描
+         * ========
+         * 流程:
+         *  1. POST /project/<id>/new-scan 触发后台扫描
+         *  2. 得到 scan_id
+         *  3. 每 2 秒轮询 /api/scans 检查状态
+         *  4. 扫描完成后自动刷新页面
+         */
+        async function startScan() {
+            const btn = event.target;
+            btn.disabled = true;              // 禁用按钮防止重复点击
+            btn.textContent = '扫描中...';
+
+            // 触发扫描
+            const resp = await fetch('/project/{{ project.id }}/new-scan', { method: 'POST' });
+            if (resp.ok) {
+                const data = await resp.json();
+
+                // 每 2 秒轮询一次扫描状态
+                const interval = setInterval(async () => {
+                    const s = await fetch(`/api/scans?project_id={{ project.id }}`);
+                    const scans = await s.json();
+
+                    // 查找当前扫描任务
+                    const scan = scans.find(s => s.id === data.scan_id);
+                    if (scan && scan.status !== 'running') {
+                        clearInterval(interval);  // 停止轮询
+                        location.reload();        // 刷新页面展示结果
+                    }
+                }, 2000);
+            } else {
+                alert('启动扫描失败');
+                btn.disabled = false;
+                btn.textContent = '开始扫描';
+            }
+        }
+
+        /**
+         * 删除扫描任务
+         */
+        async function deleteScan(id) {
+            if (!confirm('确定删除此扫描记录？')) return;
+            await fetch(`/api/scans/${id}`, { method: 'DELETE' });
+            location.reload();
+        }
+    </script>
+</body>
+</html>

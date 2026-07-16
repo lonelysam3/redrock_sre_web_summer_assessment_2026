@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 设置 — 代码审计平台</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- ========== 顶部导航栏 ========== -->
+    <header class="header">
+        <div class="container">
+            <h1>⚙️ AI 配置</h1>
+            <nav>
+                <a href="/">← 返回项目</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- ========== AI 服务连接配置表单 ========== -->
+        <div class="card">
+            <h2>AI 服务连接</h2>
+            <p class="subtitle">配置 AI 模型以对扫描结果进行深度分析和误报排除。</p>
+
+            <form id="settings-form">
+                <!-- ===== AI 提供方选择 ===== -->
+                <div class="form-group">
+                    <label for="provider">AI 提供方</label>
+                    <select id="provider" name="provider">
+                        <option value="deepseek" {% if settings.provider == 'deepseek' %}selected{% endif %}>DeepSeek</option>
+                        <option value="openai" {% if settings.provider == 'openai' %}selected{% endif %}>OpenAI</option>
+                        <option value="custom" {% if settings.provider == 'custom' %}selected{% endif %}>自定义（OpenAI 兼容）</option>
+                    </select>
+                </div>
+
+                <!-- ===== API Key 输入 ===== -->
+                <div class="form-group">
+                    <label for="api_key">API Key</label>
+                    <div class="input-row">
+                        <!-- 密码输入框，已有值时脱敏显示 -->
+                        <input type="password" id="api_key" name="api_key"
+                               placeholder="sk-..."
+                               value="{% if settings.api_key %}***{{ settings.api_key[-4:] }}{% endif %}">
+                        <!-- 切换密码可见性按钮 -->
+                        <button type="button" class="btn btn-sm" onclick="toggleKey()">👁</button>
+                    </div>
+                    <small>密钥仅存储在你本地数据库中，不会上传到任何地方。</small>
+                </div>
+
+                <!-- ===== API 地址 + 快捷预设 ===== -->
+                <div class="form-group">
+                    <label for="base_url">API 地址</label>
+                    <input type="text" id="base_url" name="base_url"
+                           value="{{ settings.base_url }}"
+                           placeholder="https://api.deepseek.com">
+
+                    <div class="presets">
+                        <span class="preset-label">快捷填入：</span>
+                        <button type="button" class="btn btn-sm" onclick="setPreset('deepseek')">DeepSeek</button>
+                        <button type="button" class="btn btn-sm" onclick="setPreset('openai')">OpenAI</button>
+                    </div>
+                </div>
+
+                <!-- ===== 模型名称输入 ===== -->
+                <div class="form-group">
+                    <label for="model">模型名称</label>
+                    <div class="input-row">
+                        <input type="text" id="model" name="model"
+                               value="{{ settings.model }}"
+                               placeholder="deepseek-chat">
+                        <button type="button" class="btn" id="fetch-models-btn" onclick="fetchModels()">获取模型</button>
+                    </div>
+                    <div id="model-list" class="model-dropdown" style="display:none;"></div>
+                    <small id="fetch-status" style="display:none;margin-top:4px;"></small>
+                </div>
+
+                <!-- 操作按钮：保存 + 测试连接 -->
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">保存配置</button>
+                    <button type="button" class="btn" onclick="testConnection()">测试连接</button>
+                </div>
+            </form>
+
+            <!-- 状态消息区域（成功/失败提示） -->
+            <div id="status-message" class="status-message" style="display:none;"></div>
+        </div>
+
+        <!-- ========== 各平台默认配置参考表 ========== -->
+        <div class="card">
+            <h3>📋 各平台默认配置</h3>
+            <table class="table">
+                <thead>
+                    <tr><th>平台</th><th>API 地址</th><th>模型</th><th>获取 API Key</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>DeepSeek</td>
+                        <td><code>https://api.deepseek.com</code></td>
+                        <td><code>deepseek-chat</code></td>
+                        <td><a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a></td>
+                    </tr>
+                    <tr>
+                        <td>OpenAI</td>
+                        <td><code>https://api.openai.com</code></td>
+                        <td><code>gpt-4o</code></td>
+                        <td><a href="https://platform.openai.com" target="_blank">platform.openai.com</a></td>
+                    </tr>
+                    <tr>
+                        <td>本地 Ollama</td>
+                        <td><code>http://localhost:11434/v1</code></td>
+                        <td><code>qwen2.5:7b</code></td>
+                        <td>无需 Key（随便填一个）</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </main>
+
+    <script>
+        /**
+         * 平台预设配置
+         * ============
+         * 点击快捷填入按钮时自动填充 base_url、model、provider。
+         * 可根据需要扩展更多平台。
+         */
+        const PRESETS = {
+            deepseek: { base_url: 'https://api.deepseek.com', model: 'deepseek-chat', provider: 'deepseek' },
+            openai:   { base_url: 'https://api.openai.com', model: 'gpt-4o', provider: 'openai' },
+        };
+
+        /**
+         * 快捷填入预设值
+         */
+        function setPreset(name) {
+            const p = PRESETS[name];
+            document.getElementById('base_url').value = p.base_url;
+            document.getElementById('model').value = p.model;
+            document.getElementById('provider').value = p.provider;
+        }
+
+        /**
+         * 切换 API Key 可见性
+         * ==================
+         * 在 password 和 text 类型之间切换。
+         */
+        function toggleKey() {
+            const el = document.getElementById('api_key');
+            el.type = el.type === 'password' ? 'text' : 'password';
+        }
+
+        /**
+         * 保存 AI 配置
+         * ============
+         * 1. 收集表单数据
+         * 2. POST 到 /api/settings/ai
+         * 3. 根据结果显示状态消息
+         */
+        document.getElementById('settings-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = {
+                api_key: document.getElementById('api_key').value,
+                base_url: document.getElementById('base_url').value,
+                model: document.getElementById('model').value,
+                provider: document.getElementById('provider').value,
+            };
+            const resp = await fetch('/api/settings/ai', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data),
+            });
+            if (resp.ok) {
+                showStatus('✅ 配置已保存', 'success');
+            } else {
+                showStatus('❌ 保存失败', 'error');
+            }
+        });
+
+        /**
+         * 测试 AI 连接
+         * ============
+         * 使用当前表单中的（未保存的）值发送一个测试请求。
+         * 测试前需注意：用的是已保存的配置，不是表单中的值。
+         *
+         * 改进建议：如果要测试表单中刚修改的、尚未保存的配置，
+         * 应先调用保存 API 再测试；当前版本直接使用已保存到数据库的配置。
+         */
+        async function testConnection() {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '测试中...';
+            showStatus('', '');  // 清空之前的状态
+
+            const resp = await fetch('/api/settings/ai/test', { method: 'POST' });
+            const data = await resp.json();
+
+            if (data.ok) {
+                showStatus('✅ ' + data.message, 'success');
+            } else {
+                showStatus('❌ ' + (data.error || '连接失败'), 'error');
+            }
+            btn.disabled = false;
+            btn.textContent = '测试连接';
+        }
+
+        /**
+         * 显示状态消息
+         * ============
+         * @param msg  消息文本
+         * @param type 消息类型 ('success' | 'error')
+         * 成功消息 5 秒后自动消失
+         */
+        function showStatus(msg, type) {
+            const el = document.getElementById('status-message');
+            el.textContent = msg;
+            el.className = 'status-message ' + type;
+            el.style.display = 'block';
+            if (type === 'success') {
+                setTimeout(() => el.style.display = 'none', 5000);
+            }
+        }
+
+        /**
+         * 获取可用模型列表
+         * ================
+         * 从配置的 API 获取模型列表并显示为可选下拉框。
+         */
+        async function fetchModels() {
+            const btn = document.getElementById('fetch-models-btn');
+            const status = document.getElementById('fetch-status');
+            const list = document.getElementById('model-list');
+
+            btn.disabled = true;
+            btn.textContent = '获取中...';
+            status.style.display = 'none';
+            list.style.display = 'none';
+
+            // 先保存当前表单中的配置（确保 API key 最新）
+            const data = {
+                api_key: document.getElementById('api_key').value,
+                base_url: document.getElementById('base_url').value,
+                model: document.getElementById('model').value,
+                provider: document.getElementById('provider').value,
+            };
+            await fetch('/api/settings/ai', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data),
+            });
+
+            // 请求模型列表
+            const resp = await fetch('/api/settings/ai/models');
+            const result = await resp.json();
+
+            if (result.ok && result.models) {
+                // 显示模型列表
+                list.innerHTML = result.models.map(m =>
+                    `<div class="model-option" onclick="selectModel('${m}')">${m}</div>`
+                ).join('');
+                list.style.display = 'block';
+                status.style.display = 'block';
+                status.style.color = 'var(--green)';
+                status.textContent = `✅ 找到 ${result.models.length} 个模型，点击选择`;
+            } else {
+                status.style.display = 'block';
+                status.style.color = 'var(--red)';
+                status.textContent = '❌ ' + (result.error || '获取失败');
+            }
+
+            btn.disabled = false;
+            btn.textContent = '获取模型';
+        }
+
+        /**
+         * 选择一个模型
+         */
+        function selectModel(name) {
+            document.getElementById('model').value = name;
+            document.getElementById('model-list').style.display = 'none';
+            document.getElementById('fetch-status').style.display = 'none';
+        }
+
+        // 点击页面其他地方时关闭模型下拉
+        document.addEventListener('click', (e) => {
+            const list = document.getElementById('model-list');
+            if (list.style.display === 'block' && !e.target.closest('#model-list') && !e.target.closest('#fetch-models-btn')) {
+                list.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>

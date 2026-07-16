@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Uploads & extractions
+backend/uploads/
+backend/extracted/
+backend/_test*/
+backend/_cg*/
+backend/_sqli*/
+backend/_pdo*/
+backend/_xfile*/
+backend/_xstage2/
+backend/_tt/
+backend/_php_test/
+backend/_taint*/
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env

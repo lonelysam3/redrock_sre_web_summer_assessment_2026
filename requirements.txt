@@ -1,0 +1,15 @@
+flask>=3.1                           # Web 应用框架（路由、模板、请求处理）
+flask-sqlalchemy>=3.1                # Flask 的 SQLAlchemy 集成（ORM）
+
+# ---- 语法解析引擎（多语言支持）----
+tree-sitter>=0.24                    # 通用语法解析引擎（增量解析）
+tree-sitter-c>=0.24                  # C 语言语法定义
+tree-sitter-cpp>=0.23                # C++ 语言语法定义
+tree-sitter-php>=0.23                # PHP 语言语法定义（新增）
+
+# ---- HTTP 客户端 ----
+httpx>=0.28                          # 现代化的 HTTP 客户端（用于 AI API 调用）
+
+# ---- 工具库 ----
+python-dotenv>=1.0                   # .env 文件环境变量加载
+sqlalchemy>=2.0                      # SQLAlchemy ORM 核心库

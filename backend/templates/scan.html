@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>扫描 #{{ scan.id }} — 代码审计平台</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        /* ========== 本页面专用样式 ========== */
+
+        /* 漏洞列表：纵向排列，间距 12px */
+        .vuln-list { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+
+        /* 单个漏洞卡片：左侧彩色边框表示严重程度 */
+        .vuln-item { background: #1e1e2e; border-radius: 8px; padding: 16px; border-left: 4px solid #555; }
+        .vuln-item.critical { border-left-color: #f38ba8; }   /* 红色 = 严重 */
+        .vuln-item.high     { border-left-color: #fab387; }   /* 橙色 = 高 */
+        .vuln-item.medium   { border-left-color: #f9e2af; }   /* 黄色 = 中 */
+        .vuln-item.low      { border-left-color: #a6e3a1; }   /* 绿色 = 低 */
+
+        /* 漏洞卡片头部：类型 + 等级 + AI 标记 */
+        .vuln-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .vuln-type { font-weight: bold; font-size: 1.05em; }
+        .vuln-meta { display: flex; gap: 12px; font-size: 0.85em; color: #a6adc8; }
+
+        /* 代码片段展示区：深色背景 + 等宽字体 */
+        .vuln-code {
+            background: #11111b;
+            border-radius: 6px;
+            padding: 12px;
+            margin: 8px 0;
+            font-family: 'Cascadia Code', 'Fira Code', monospace;
+            font-size: 0.85em;
+            overflow-x: auto;
+            white-space: pre;            /* 保留原始格式 */
+        }
+        .vuln-code .marker { color: #f38ba8; }   /* SOURCE/SINK 标记为红色 */
+
+        /* AI 分析结果区域 */
+        .ai-result { background: #1e1e2e; border: 1px solid #45475a; border-radius: 6px; padding: 12px; margin-top: 8px; }
+        .ai-result h4 { margin: 0 0 8px; color: #89b4fa; }
+
+        /* AI 修复代码展示 */
+        .fix-code {
+            background: #11111b;
+            border-radius: 4px;
+            padding: 8px;
+            font-family: monospace;
+            font-size: 0.8em;
+            overflow-x: auto;
+        }
+
+        /* 统计卡片区：自动列宽网格 */
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .stat { background: #1e1e2e; border-radius: 8px; padding: 16px; text-align: center; }
+        .stat .num { font-size: 2em; font-weight: bold; }
+        .stat .label { font-size: 0.8em; color: #a6adc8; margin-top: 4px; }
+        .stat .num.critical { color: #f38ba8; }    /* 红色数字 */
+        .stat .num.high     { color: #fab387; }    /* 橙色数字 */
+        .stat .num.medium   { color: #f9e2af; }    /* 黄色数字 */
+        .stat .num.low      { color: #a6e3a1; }    /* 绿色数字 */
+
+        /* 筛选器区域 */
+        .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+        .filters select, .filters input { padding: 6px 12px; border-radius: 6px; border: 1px solid #45475a; background: #1e1e2e; color: #cdd6f4; }
+    </style>
+</head>
+<body>
+    <!-- ========== 顶部导航栏 ========== -->
+    <header class="header">
+        <div class="container">
+            <h1>🔍 <a href="/">扫描 #{{ scan.id }}</a></h1>
+            <nav>
+                <a href="/project/{{ project.id }}">← {{ project.name }}</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- ========== 扫描概览信息 ========== -->
+        <div class="card">
+            <div>
+                <strong>项目：</strong> {{ project.name }} ({{ project.language }})
+                &nbsp;|&nbsp;
+                <strong>状态：</strong>
+                {% if scan.status == 'done' %}
+                <span class="badge badge-green">完成</span>
+                {% elif scan.status == 'running' %}
+                <span class="badge badge-yellow">扫描中...</span>
+                {% elif scan.status == 'analyzing' %}
+                <span class="badge" style="background:var(--blue);color:#111">🤖 AI分析中</span>
+                {% elif scan.status == 'failed' %}
+                <span class="badge badge-red">失败</span>
+                {% else %}
+                <span class="badge">{{ scan.status }}</span>
+                {% endif %}
+                &nbsp;|&nbsp;
+                <strong>发现 {{ scan.vulns_found }} 个漏洞</strong>
+            </div>
+        </div>
+
+        {% if scan.status == 'failed' %}
+        <!-- ========== 扫描失败 ========== -->
+        <div class="safe-result">
+            <div class="safe-hero" style="border-color: rgba(243, 139, 168, 0.4);">
+                <div class="safe-icon">💥</div>
+                <h2 style="color: var(--red);">扫描失败</h2>
+                <p class="safe-subtitle">
+                    扫描过程中发生了错误，未能完成分析。请检查项目文件是否完整、语言选择是否正确，然后重新扫描。
+                </p>
+            </div>
+
+            <!-- 扫描统计 -->
+            <div class="safe-stats">
+                <div class="safe-stat">
+                    <div class="safe-stat-num">{{ scan.total_files }}</div>
+                    <div class="safe-stat-label">发现文件</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num">{{ scan.scanned_files }}</div>
+                    <div class="safe-stat-label">已扫描</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num" style="color: var(--red);">✕</div>
+                    <div class="safe-stat-label">状态</div>
+                </div>
+            </div>
+
+            <!-- 时间信息 -->
+            <div class="safe-pipeline" style="border-color: rgba(243, 139, 168, 0.2);">
+                <h3>扫描时间线</h3>
+                <div class="fail-timeline">
+                    <div class="fail-step">
+                        <span class="fail-step-icon">🕐</span>
+                        <span class="fail-step-label">开始时间</span>
+                        <span class="fail-step-value">{{ scan.started_at.strftime('%Y-%m-%d %H:%M:%S') if scan.started_at else '-' }}</span>
+                    </div>
+                    <div class="fail-step">
+                        <span class="fail-step-icon">💥</span>
+                        <span class="fail-step-label">失败时间</span>
+                        <span class="fail-step-value">{{ scan.finished_at.strftime('%Y-%m-%d %H:%M:%S') if scan.finished_at else '-' }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 排查建议 -->
+            <div class="safe-note" style="background: rgba(243, 139, 168, 0.08); border-color: rgba(243, 139, 168, 0.2);">
+                <p>🔧 <strong>可能的原因：</strong></p>
+                <ul>
+                    <li>压缩包内文件编码异常或包含二进制文件</li>
+                    <li>选择的编程语言与实际源码不符</li>
+                    <li>源代码文件过大导致分析超时</li>
+                    <li>后端依赖缺失（如 tree-sitter 语言包）</li>
+                </ul>
+                <p style="margin-top: 12px;">
+                    <a href="/project/{{ project.id }}" class="btn btn-sm">返回项目页</a>
+                    &nbsp;
+                    <button class="btn btn-sm btn-primary" onclick="retryScan()">重新扫描</button>
+                </p>
+            </div>
+        </div>
+
+        {% elif scan.status == 'analyzing' %}
+        <!-- AI 分析中 -->
+        <div class="safe-result">
+            <div class="safe-hero" style="border-color: rgba(137, 180, 250, 0.4);">
+                <div class="safe-icon">🤖</div>
+                <h2 style="color: var(--blue);">AI 深度分析中...</h2>
+                <p class="safe-subtitle">正在逐个分析漏洞的形成原因、攻击方式和修复建议，请稍候</p>
+            </div>
+            <div class="safe-stats">
+                <div class="safe-stat">
+                    <div class="safe-stat-num">{{ scan.vulns_found }}</div>
+                    <div class="safe-stat-label">待分析漏洞</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num" style="color: var(--blue);">{{ ai_analyzed_count }}</div>
+                    <div class="safe-stat-label">已完成</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num" style="color: var(--subtext);">{{ scan.vulns_found - ai_analyzed_count }}</div>
+                    <div class="safe-stat-label">剩余</div>
+                </div>
+            </div>
+            <!-- 进度条 -->
+            <div style="background:var(--surface);border-radius:8px;height:12px;overflow:hidden;margin-bottom:20px;">
+                <div style="background:var(--blue);height:100%;width:{{ (ai_analyzed_count / scan.vulns_found * 100) if scan.vulns_found else 0 }}%;transition:width 0.5s;"></div>
+            </div>
+            <script>setTimeout(() => location.reload(), 3000);</script>
+        </div>
+
+        {% elif scan.status == 'running' %}
+        <!-- 扫描进行中：每 3 秒刷新一次，直到后台完成 -->
+        <div class="safe-result">
+            <div class="safe-hero">
+                <div class="safe-icon">⏳</div>
+                <h2>扫描正在进行中...</h2>
+                <p class="safe-subtitle">正在分析项目源码，请稍候...</p>
+            </div>
+            <div class="safe-stats">
+                <div class="safe-stat">
+                    <div class="safe-stat-num">{{ scan.total_files }}</div>
+                    <div class="safe-stat-label">项目文件数</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num" style="color: var(--yellow);">...</div>
+                    <div class="safe-stat-label">分析中</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num" style="color: var(--yellow);">...</div>
+                    <div class="safe-stat-label">待出结果</div>
+                </div>
+            </div>
+            <script>
+                // 简单暴力：每 3 秒刷新，不判断状态，后端准备好自然显示正确结果
+                setTimeout(() => location.reload(), 3000);
+            </script>
+        </div>
+
+        {% elif not vulns and scan.status == 'done' %}
+        <!-- ========== 无漏洞：安全报告 ========== -->
+        <div class="safe-result">
+            <div class="safe-hero">
+                <div class="safe-icon">🛡️</div>
+                <h2>未检测到漏洞</h2>
+                <p class="safe-subtitle">该项目的全部源码已通过三级流水线安全分析，未发现已知漏洞模式</p>
+            </div>
+
+            <!-- 扫描统计概览 -->
+            <div class="safe-stats">
+                <div class="safe-stat">
+                    <div class="safe-stat-num">{{ scan.total_files }}</div>
+                    <div class="safe-stat-label">扫描文件数</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num">{{ scan.scanned_files }}</div>
+                    <div class="safe-stat-label">已完成分析</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num" style="color:#a6e3a1">0</div>
+                    <div class="safe-stat-label">发现漏洞</div>
+                </div>
+            </div>
+
+            <!-- 分析阶段说明 -->
+            <div class="safe-pipeline">
+                <h3>三级流水线分析已通过</h3>
+                <div class="pipeline-stages">
+                    <div class="pipeline-stage done">
+                        <span class="stage-icon">🔍</span>
+                        <span class="stage-name">Stage 1</span>
+                        <span class="stage-desc">污点追踪分析</span>
+                        <span class="stage-check">✓</span>
+                    </div>
+                    <div class="pipeline-arrow">→</div>
+                    <div class="pipeline-stage done">
+                        <span class="stage-icon">📊</span>
+                        <span class="stage-name">Stage 2</span>
+                        <span class="stage-desc">数据流分析</span>
+                        <span class="stage-check">✓</span>
+                    </div>
+                    <div class="pipeline-arrow">→</div>
+                    <div class="pipeline-stage done">
+                        <span class="stage-icon">🧩</span>
+                        <span class="stage-name">Stage 3</span>
+                        <span class="stage-desc">AST 模式分析</span>
+                        <span class="stage-check">✓</span>
+                    </div>
+                </div>
+            </div>
+
+            {% if scanned_files %}
+            <!-- 已扫描文件清单 -->
+            <div class="safe-files">
+                <h3>
+                    已扫描文件
+                    <span class="file-count">（共 {{ scanned_files|length }} 个文件）</span>
+                </h3>
+                <div class="file-list">
+                    {% for f in scanned_files %}
+                    <div class="file-item">
+                        <span class="file-icon">📄</span>
+                        <code class="file-path">{{ f }}</code>
+                    </div>
+                    {% endfor %}
+                    {% if scanned_files|length >= 200 %}
+                    <div class="file-item file-more">
+                        <span class="file-icon">📁</span>
+                        <span class="file-path">... 还有更多文件</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="safe-note">
+                <p>💡 <strong>提示：</strong>未检测到漏洞不代表绝对安全。</p>
+                <ul>
+                    <li>三级流水线分析覆盖了常见的 Source-Sink 模式和危险函数调用</li>
+                    <li>建议结合人工代码审查和渗透测试进行更全面的安全评估</li>
+                    <li>可使用 AI 设置页面配置大模型进行深度代码逻辑分析</li>
+                </ul>
+            </div>
+        </div>
+
+        {% else %}
+        <!-- ========== 统计卡片（Jinja2 计算各等级数量） ========== -->
+        {% set critical_count = vulns|selectattr('severity', 'equalto', 'critical')|list|length %}
+        {% set high_count = vulns|selectattr('severity', 'equalto', 'high')|list|length %}
+        {% set medium_count = vulns|selectattr('severity', 'equalto', 'medium')|list|length %}
+        {% set low_count = vulns|selectattr('severity', 'equalto', 'low')|list|length %}
+        {% set analyzed_count = vulns|selectattr('ai_is_vulnerable', 'ne', None)|list|length %}
+        {% set confirmed_count = vulns|selectattr('ai_is_vulnerable', 'equalto', 'true')|list|length %}
+        {% set uncertain_count = vulns|selectattr('ai_is_vulnerable', 'equalto', 'uncertain')|list|length %}
+        {% set fp_count = vulns|selectattr('ai_is_vulnerable', 'equalto', 'false')|list|length %}
+
+        <div class="stats">
+            <div class="stat"><div class="num critical">{{ critical_count }}</div><div class="label">🔴 Critical</div></div>
+            <div class="stat"><div class="num high">{{ high_count }}</div><div class="label">🟠 High</div></div>
+            <div class="stat"><div class="num medium">{{ medium_count }}</div><div class="label">🟡 Medium</div></div>
+            <div class="stat"><div class="num low">{{ low_count }}</div><div class="label">🟢 Low</div></div>
+            <div class="stat"><div class="num">{{ vulns|length }}</div><div class="label">总计</div></div>
+            <div class="stat"><div class="num" style="color:#a6e3a1">{{ confirmed_count }}</div><div class="label">AI确认漏洞</div></div>
+            <div class="stat"><div class="num" style="color:#f9e2af">{{ uncertain_count }}</div><div class="label">AI不确定</div></div>
+        </div>
+
+        <!-- 操作按钮行 -->
+        <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;">
+            <button class="btn btn-primary" id="analyze-all-btn" onclick="analyzeAll()">🤖 一键 AI 分析</button>
+            <a href="/settings" class="btn">⚙ AI 设置</a>
+            <div id="analyze-progress-bar" style="display:none;flex:1;margin-left:8px;">
+                <div style="background:var(--surface);border-radius:6px;height:8px;overflow:hidden;">
+                    <div id="analyze-bar-fill" style="background:var(--blue);height:100%;width:0%;transition:width 0.3s;"></div>
+                </div>
+                <span id="analyze-bar-text" style="color:var(--subtext);font-size:0.8em;margin-left:8px;"></span>
+            </div>
+        </div>
+
+        <!-- ========== 筛选器 ========== -->
+        <!-- 按漏洞类型/等级/文件名筛选，触发 JS applyFilters() -->
+        <div class="filters">
+            <select id="filter-type" onchange="applyFilters()">
+                <option value="">全部类型</option>
+                <option value="sql_injection">SQL 注入</option>
+                <option value="command_execution">命令执行</option>
+                <option value="ssrf">SSRF</option>
+                <option value="path_traversal">路径穿越</option>
+                <option value="arbitrary_file_read">任意文件读取</option>
+                <option value="xss">XSS</option>
+                <option value="file_upload">文件上传</option>
+                <option value="deserialization">反序列化</option>
+            </select>
+            <select id="filter-severity" onchange="applyFilters()">
+                <option value="">全部等级</option>
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+            </select>
+            <input type="text" id="filter-file" placeholder="搜索文件名..." oninput="applyFilters()">
+            <button class="btn btn-sm" onclick="sortByAI()" title="按 AI 分析结果排序：确认漏洞排最前">🤖 分类排序</button>
+        </div>
+
+        <!-- ========== 漏洞列表 ========== -->
+        <div class="vuln-list" id="vuln-list">
+            {% for v in vulns %}
+            <!-- 每个漏洞卡片携带 data-* 属性供筛选 JS 使用 -->
+            <div class="vuln-item {{ v.severity }}"
+                 data-type="{{ v.vuln_type }}"
+                 data-severity="{{ v.severity }}"
+                 data-ai="{{ v.ai_is_vulnerable or 'unanalyzed' }}"
+                 data-file="{{ v.file_path }}">
+                <div class="vuln-header">
+                    <div>
+                        <!-- 漏洞类型（图标 + 中文名） -->
+                        <span class="vuln-type">
+                            {% if v.vuln_type == 'sql_injection' %}SQL 注入
+                            {% elif v.vuln_type == 'command_execution' %}命令执行
+                            {% elif v.vuln_type == 'ssrf' %}SSRF
+                            {% elif v.vuln_type == 'path_traversal' %}路径穿越
+                            {% elif v.vuln_type == 'arbitrary_file_read' %}任意文件读取
+                            {% else %}{{ v.vuln_type }}{% endif %}
+                        </span>
+                        <!-- 严重程度徽章 -->
+                        <span class="badge badge-{{ v.severity }}">{{ v.severity.upper() }}</span>
+                        <!-- AI 分析结果标记（如果已分析） -->
+                        {% if v.ai_is_vulnerable and v.ai_is_vulnerable in ('true','false','uncertain') %}
+                        <span class="badge" style="background:#45475a">
+                            🤖 {{ {'true':'确认漏洞','false':'误报','uncertain':'不确定'}[v.ai_is_vulnerable] }}
+                        </span>
+                        {% endif %}
+                    </div>
+                    <div class="vuln-meta">
+                        <!-- 文件路径 : 行号 -->
+                        <span>{{ v.file_path }} : {{ v.line_number }}</span>
+                        <!-- AI 分析按钮（已分析则禁用） -->
+                        <button class="btn btn-sm" onclick="analyzeVuln({{ v.id }})" {% if v.ai_is_vulnerable %}disabled{% endif %}>
+                            🤖 AI 分析
+                        </button>
+                        <!-- 人工审核状态下拉框 -->
+                        <select onchange="updateStatus({{ v.id }}, this.value)" style="padding:2px 6px;font-size:0.8em;border-radius:4px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;">
+                            <option value="pending" {% if v.status == 'pending' %}selected{% endif %}>待处理</option>
+                            <option value="confirmed" {% if v.status == 'confirmed' %}selected{% endif %}>已确认</option>
+                            <option value="potential" {% if v.status == 'potential' %}selected{% endif %}>潜在</option>
+                            <option value="false_positive" {% if v.status == 'false_positive' %}selected{% endif %}>误报</option>
+                            <option value="reviewed" {% if v.status == 'reviewed' %}selected{% endif %}>已审查</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- ===== 引擎输出：Source 代码 + 数据流 + Sink 代码 ===== -->
+                {% if v.source_code or v.sink_code %}
+                <div class="vuln-code">
+                    {% if v.source_code %}<span class="marker">// SOURCE（用户输入）: {{ v.source_func }}</span>
+{{ v.source_code }}{% endif %}
+                    {% if v.data_flow %}<span class="marker">// DATA FLOW（数据流）: {{ v.data_flow }}</span>{% endif %}
+                    {% if v.sink_code %}<span class="marker">// SINK（危险函数）: {{ v.sink_func }}</span>
+{{ v.sink_code }}{% endif %}
+                </div>
+                {% endif %}
+
+                <!-- ===== AI 深度分析结果 ===== -->
+                {% if v.ai_root_cause or v.ai_attack_vector or v.ai_fix_suggestion %}
+                <div class="ai-result">
+                    <h4>AI 深度分析结果 {% if v.ai_severity %}({{ v.ai_severity.upper() }}){% endif %}</h4>
+                    {% if v.ai_cwe_id %}<p><strong>CWE：</strong>{{ v.ai_cwe_id }}{% if v.ai_owasp_category %} &nbsp;|&nbsp; <strong>OWASP：</strong>{{ v.ai_owasp_category }}{% endif %}</p>{% endif %}
+
+                    {% if v.ai_root_cause %}
+                    {% set rc = v.ai_root_cause | from_json %}
+                    <details open>
+                        <summary><strong>形成原因</strong></summary>
+                        {% if rc and rc.summary %}
+                        <p>{{ rc.summary }}</p>
+                        <p style="color:#a6adc8;font-size:0.9em;">{{ rc.detail }}</p>
+                        {% if rc.problem_line %}<p><code style="background:#45475a">{{ rc.problem_line }}</code></p>{% endif %}
+                        {% else %}
+                        <pre style="white-space:pre-wrap;font-size:0.9em;">{{ v.ai_root_cause }}</pre>
+                        {% endif %}
+                    </details>
+                    {% endif %}
+
+                    {% if v.ai_attack_vector %}
+                    {% set atk = v.ai_attack_vector | from_json %}
+                    <details>
+                        <summary><strong>攻击方式分析</strong></summary>
+                        {% if atk and atk.discovery_method %}
+                        <p style="color:#a6adc8;font-size:0.9em;">{{ atk.discovery_method }}</p>
+                        {% endif %}
+                        {% if atk and atk.attack_scenarios %}
+                        <div style="margin-top:8px;">
+                            {% for s in atk.attack_scenarios %}
+                            <div style="background:#181825;border-radius:6px;padding:10px;margin-bottom:8px;border-left:3px solid #fab387;">
+                                <strong>{{ s.name }}</strong>
+                                <span class="badge" style="margin-left:8px;font-size:0.7em;">{{ s.difficulty }}</span>
+                                <pre class="fix-code" style="margin-top:4px;">{{ s.payload }}</pre>
+                                <small style="color:#a6adc8;">{{ s.expected_effect }}</small>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        {% if atk and atk.waf_bypass %}
+                        <p style="color:#f9e2af;font-size:0.85em;margin-top:4px;">🛡 WAF 绕过: {{ atk.waf_bypass }}</p>
+                        {% endif %}
+                        {% if not atk %}
+                        <pre style="white-space:pre-wrap;font-size:0.9em;">{{ v.ai_attack_vector }}</pre>
+                        {% endif %}
+                    </details>
+                    {% endif %}
+
+                    {% if v.ai_fix_suggestion %}
+                    {% set fix = v.ai_fix_suggestion | from_json %}
+                    <details>
+                        <summary><strong>修复建议</strong></summary>
+                        {% if fix and fix.primary %}
+                        <p><strong>{{ fix.primary.approach }}</strong></p>
+                        <p style="color:#a6adc8;font-size:0.9em;">{{ fix.primary.description }}</p>
+                        {% if fix.primary.code %}
+                        <pre class="fix-code">{{ fix.primary.code }}</pre>
+                        {% endif %}
+                        {% if fix.alternatives %}
+                        {% for alt in fix.alternatives %}
+                        <p style="margin-top:8px;"><strong>备选方案: {{ alt.approach }}</strong></p>
+                        <pre class="fix-code">{{ alt.code }}</pre>
+                        {% endfor %}
+                        {% endif %}
+                        {% if fix.security_notes %}
+                        <p style="color:#f9e2af;font-size:0.85em;">{{ fix.security_notes }}</p>
+                        {% endif %}
+                        {% else %}
+                        <pre style="white-space:pre-wrap;font-size:0.9em;">{{ v.ai_fix_suggestion }}</pre>
+                        {% if v.ai_fix_code %}
+                        <details>
+                            <summary>查看修复代码</summary>
+                            <pre class="fix-code">{{ v.ai_fix_code }}</pre>
+                        </details>
+                        {% endif %}
+                        {% endif %}
+                    </details>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+
+        {% endif %}
+    </main>
+
+    <script>
+        // 漏洞类型中文标签映射（用于筛选器选项值匹配）
+        const TYPE_LABELS = {
+            'sql_injection': 'SQL 注入',
+            'command_execution': '命令执行',
+            'ssrf': 'SSRF',
+            'path_traversal': '路径穿越',
+            'arbitrary_file_read': '任意文件读取',
+        };
+
+        /**
+         * 手动触发 AI 分析
+         * ================
+         * POST /api/vulns/<id>/analyze
+         * 分析完成后刷新页面展示结果
+         */
+        async function analyzeVuln(id) {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '分析中...';
+
+            const resp = await fetch(`/api/vulns/${id}/analyze`, { method: 'POST' });
+            if (resp.ok) {
+                location.reload();
+            } else {
+                const err = await resp.json();
+                if (err.error === 'AI 未配置') {
+                    alert('⚠️ AI 尚未配置\n\n请先前往设置页面配置：\n1. API Key\n2. Base URL\n3. 模型名称\n\n配置完成后即可使用 AI 分析功能。');
+                } else {
+                    alert('AI 分析失败: ' + (err.error || '未知错误'));
+                }
+                btn.disabled = false;
+                btn.textContent = '🤖 AI 分析';
+            }
+        }
+
+        /**
+         * 更新漏洞审核状态
+         * ================
+         * PATCH /api/vulns/<id> { status: ... }
+         * 无需刷新页面，状态即时保存
+         */
+        async function updateStatus(id, status) {
+            await fetch(`/api/vulns/${id}`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({status})
+            });
+        }
+
+        /**
+         * AI 分类排序：确认漏洞 → 不确定 → 误报 → 未分析
+         */
+        function sortByAI() {
+            const list = document.getElementById('vuln-list');
+            const items = Array.from(list.querySelectorAll('.vuln-item'));
+            const order = { 'true': 0, 'uncertain': 1, 'false': 2, 'unanalyzed': 3 };
+            items.sort((a, b) => (order[a.dataset.ai] ?? 4) - (order[b.dataset.ai] ?? 4));
+            items.forEach(item => list.appendChild(item));
+        }
+
+        /**
+         * 前端筛选器
+         * ==========
+        function applyFilters() {
+            const type = document.getElementById('filter-type').value;
+            const severity = document.getElementById('filter-severity').value;
+            const file = document.getElementById('filter-file').value.toLowerCase();
+
+            document.querySelectorAll('.vuln-item').forEach(item => {
+                // 检查是否匹配所有筛选条件
+                const matchType = !type || item.dataset.type === type;
+                const matchSeverity = !severity || item.dataset.severity === severity;
+                const matchFile = !file || item.dataset.file.toLowerCase().includes(file);
+                item.style.display = (matchType && matchSeverity && matchFile) ? '' : 'none';
+            });
+        }
+
+        // 扫描中时每 5 秒自动刷新页面
+        {% if scan.status == 'running' %}
+        setInterval(() => location.reload(), 5000);
+        {% endif %}
+
+        /**
+         * 一键 AI 分析 — 逐个分析 + 实时进度条
+         */
+        async function analyzeAll() {
+            const btn = document.getElementById('analyze-all-btn');
+            const bar = document.getElementById('analyze-progress-bar');
+            const fill = document.getElementById('analyze-bar-fill');
+            const text = document.getElementById('analyze-bar-text');
+
+            // 收集所有未分析的漏洞 ID
+            const vulnIds = [];
+            document.querySelectorAll('.vuln-item').forEach(item => {
+                const btnEl = item.querySelector('.btn[disabled]');
+                const select = item.querySelector('select');
+                // 找 AI 分析按钮
+                const analyzeBtn = Array.from(item.querySelectorAll('button')).find(b => b.textContent.includes('AI'));
+                if (analyzeBtn && !analyzeBtn.disabled) {
+                    // 从按钮 onclick 提取 id
+                    const match = analyzeBtn.getAttribute('onclick');
+                    if (match) {
+                        const idMatch = match.match(/analyzeVuln\((\d+)\)/);
+                        if (idMatch) vulnIds.push(parseInt(idMatch[1]));
+                    }
+                }
+            });
+
+            if (vulnIds.length === 0) {
+                alert('所有漏洞已分析完毕');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = '分析中...';
+            bar.style.display = 'flex';
+            fill.style.width = '0%';
+            fill.style.background = 'var(--blue)';
+            text.textContent = '0/' + vulnIds.length;
+
+            let done = 0;
+            let failed = 0;
+
+            for (const id of vulnIds) {
+                try {
+                    const resp = await fetch('/api/vulns/' + id + '/analyze', { method: 'POST' });
+                    if (resp.ok) {
+                        done++;
+                    } else {
+                        const err = await resp.json();
+                        if (err.error === 'AI 未配置') {
+                            alert('⚠️ AI 尚未配置\n\n请先前往设置页面配置：\n1. API Key\n2. Base URL\n3. 模型名称');
+                            btn.disabled = false;
+                            btn.textContent = '🤖 一键 AI 分析';
+                            bar.style.display = 'none';
+                            return;
+                        }
+                        failed++;
+                    }
+                } catch (e) {
+                    failed++;
+                }
+                const pct = Math.round((done + failed) / vulnIds.length * 100);
+                fill.style.width = pct + '%';
+                text.textContent = (done + failed) + '/' + vulnIds.length +
+                    ' (' + done + ' 成功' + (failed > 0 ? ', ' + failed + ' 失败' : '') + ')';
+            }
+
+            if (failed > 0) {
+                fill.style.background = 'var(--yellow)';
+            }
+            setTimeout(() => location.reload(), 1000);
+        }
+        async function retryScan() {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '启动中...';
+            const resp = await fetch('/project/{{ project.id }}/new-scan', { method: 'POST' });
+            if (resp.ok) {
+                const data = await resp.json();
+                window.location.href = '/scan/' + data.scan_id;
+            } else {
+                alert('启动扫描失败');
+                btn.disabled = false;
+                btn.textContent = '重新扫描';
+            }
+        }
+    </script>
+</body>
+</html>
