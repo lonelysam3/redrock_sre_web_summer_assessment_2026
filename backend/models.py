@@ -96,6 +96,7 @@ class Vulnerability(db.Model):
     source_code = db.Column(db.Text, nullable=True)                        # Source 点（用户输入入口）的代码片段
     sink_code = db.Column(db.Text, nullable=True)                          # Sink 点（危险函数调用）的代码片段
     data_flow = db.Column(db.Text, nullable=True)                          # 变量从 Source 到 Sink 的传播链
+    description = db.Column(db.Text, nullable=True)                        # 漏洞描述（AST 阶段生成）
     context_code = db.Column(db.Text, nullable=True)                       # 漏洞周围的上下文代码
 
     # ---- AI 二次分析结果 ----

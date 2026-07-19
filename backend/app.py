@@ -81,6 +81,7 @@ def _migrate_db():
         ] + [
             ("source_file", "VARCHAR(500)"),
             ("source_line", "INTEGER"),
+            ("description", "TEXT"),
         ]
         for col_name, col_type in missing:
             if col_name not in cols:
@@ -557,6 +558,7 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
                     sink_code=v.get("sink_code", ""),
                     data_flow=v.get("data_flow", ""),
                     pipeline_stage=v.get("pipeline_stage", "taint"),
+                    description=v.get("description", ""),
                     status=v.get("status", "pending"),
                     ai_payload=v.get("ai_payload", ""),
                     ai_payload_result=v.get("ai_payload_result", ""),
@@ -790,7 +792,7 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
             # ---- 预取 data_flow / description 中引用的其他文件 ----
             import re as _re
             ref_files = set()
-            for text_field in [v.data_flow or "", v.description or "", v.sink_code or ""]:
+            for text_field in [v.data_flow or "", v.sink_code or ""]:
                 for m in _re.finditer(r'([\w./-]+\.(?:php|py|c|cpp|h))\b', text_field):
                     candidate = m.group(1)
                     # 尝试匹配项目中的实际文件
@@ -902,6 +904,7 @@ def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto
                     language=v.get("language", language),
                     source_code=v.get("source_code", ""), sink_code=v.get("sink_code", ""),
                     data_flow=v.get("data_flow", ""), pipeline_stage=v.get("pipeline_stage", "taint"),
+                    description=v.get("description", ""),
                     status=v.get("status", "pending"),
                 ))
 
