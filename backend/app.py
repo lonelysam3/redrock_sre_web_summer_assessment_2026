@@ -259,6 +259,11 @@ def create_app() -> Flask:
             auto_ai = data.get("auto_ai", False)
         except Exception:
             pass
+        # 兜底：也支持 query string 和 form data
+        if not auto_ai:
+            auto_ai = request.args.get("auto_ai", "").lower() in ("1", "true")
+        if not auto_ai:
+            auto_ai = request.form.get("auto_ai", "").lower() in ("1", "true")
 
         # 创建扫描任务记录
         scan = ScanTask(
