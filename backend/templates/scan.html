@@ -422,14 +422,23 @@
                     </div>
                 </div>
 
-                <!-- ===== 引擎输出：Source 代码 + 数据流 + Sink 代码 ===== -->
+                <!-- ===== 引擎输出：Source → Data Flow → Sink ===== -->
                 {% if v.source_code or v.sink_code or v.data_flow %}
                 <div class="vuln-code">
-                    {% if v.source_code %}<span class="marker">// SOURCE（用户输入）: {{ v.source_func }}</span>
-{{ v.source_code }}{% endif %}
-                    {% if v.data_flow %}<span class="marker">// DATA FLOW（数据流）: {{ v.data_flow }}</span>{% endif %}
-                    {% if v.sink_code %}<span class="marker">// SINK（危险函数）: {{ v.sink_func }}</span>
-{{ v.sink_code }}{% endif %}
+                    {% if v.source_code %}
+                    <span class="marker" style="color:#f38ba8;">▼ SOURCE</span>
+                    <span style="color:#a6adc8;font-size:0.8em;">{{ v.source_file or v.file_path }}{% if v.source_line %}:{{ v.source_line }}{% endif %}{% if v.source_func %} ({{ v.source_func }}){% endif %}</span>
+{{ v.source_code }}
+                    {% endif %}
+                    {% if v.data_flow %}
+                    <span class="marker" style="color:#f9e2af;">→ 传播路径</span>
+                    <span style="color:#cdd6f4;">{{ v.data_flow }}</span>
+                    {% endif %}
+                    {% if v.sink_code %}
+                    <span class="marker" style="color:#fab387;">▼ SINK</span>
+                    <span style="color:#a6adc8;font-size:0.8em;">{{ v.file_path }}:{{ v.line_number }}{% if v.sink_func %} ({{ v.sink_func }}){% endif %}</span>
+{{ v.sink_code }}
+                    {% endif %}
                 </div>
                 {% elif v.description %}
                 <div class="vuln-code" style="color:#a6adc8;">
