@@ -746,8 +746,8 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
     for v in vulns:
         try:
             # 从实际文件中提取代码
-            actual_source = v.source_code or ""
-            actual_sink = v.sink_code or ""
+            actual_source = (v.source_code or "").replace("{", "{{").replace("}", "}}")
+            actual_sink = (v.sink_code or "").replace("{", "{{").replace("}", "}}")
             sink_file = v.file_path
             sink_line = v.line_number
 
@@ -808,7 +808,7 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
             for rf in list(ref_files)[:3]:  # 最多 3 个额外文件
                 try:
                     rf_ctx = extract_source_context(rf, 1, min(60, sum(1 for _ in open(rf, encoding='utf-8', errors='ignore'))), context_lines=3)
-                    ctx += f"\n\n=== 引用的文件: {rf} ===\n{rf_ctx}"
+                    ctx += "\n\n=== 引用的文件: {} ===\n{}".format(rf, rf_ctx)
                 except Exception:
                     pass
 
@@ -817,11 +817,11 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
                 "vuln_type": v.vuln_type,
                 "severity": v.severity,
                 "language": v.language,
-                "data_flow": v.data_flow or "",
+                "data_flow": (v.data_flow or "").replace("{", "{{").replace("}", "}}"),
                 "source_code": actual_source,
                 "sink_code": actual_sink,
                 "pipeline_stage": v.pipeline_stage or "",
-            }, ctx, php_version=php_version,
+            }, ctx.replace("{", "{{").replace("}", "}}"), php_version=php_version,
                project_path=project_path or os.path.dirname(v.file_path) if v.file_path else "")
 
             if result:
@@ -841,7 +841,9 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
 
             db.session.commit()
         except Exception as e:
+            import traceback as _tb
             log.write(f"[AI] vuln #{v.id} failed: {e}\n")
+            _tb.print_exc(file=log)
             log.flush()
 
     log.write(f"[AI] analyzed {analyzed}/{len(vulns)} vulns\n")
