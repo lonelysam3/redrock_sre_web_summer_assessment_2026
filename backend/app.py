@@ -494,10 +494,6 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
         language:     编程语言
         auto_ai:      扫描完成后是否自动触发 AI 分析
     """
-        scan_id:      扫描任务 ID
-        project_path: 项目源码路径
-        language:     编程语言
-    """
     with app.app_context():
         scan = db.session.get(ScanTask, scan_id)
         if not scan:
