@@ -205,7 +205,13 @@
          * 重新扫描项目（主页面用）
          */
         async function rescanProject(id, name) {
-            const resp = await fetch(`/project/${id}/new-scan`, { method: 'POST' });
+            var autoAI = document.getElementById('auto-ai-checkbox');
+            var autoAiChecked = autoAI ? autoAI.checked : false;
+            var resp = await fetch('/project/' + id + '/new-scan', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({auto_ai: autoAiChecked})
+            });
             if (resp.ok) {
                 const data = await resp.json();
                 window.location.href = `/scan/${data.scan_id}`;

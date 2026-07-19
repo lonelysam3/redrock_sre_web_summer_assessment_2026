@@ -339,6 +339,10 @@
             <button class="btn btn-primary" id="analyze-all-btn" onclick="analyzeAll()">🤖 一键 AI 分析</button>
             <button class="btn" onclick="retryScan(event)">🔄 重新扫描</button>
             <a href="/settings" class="btn">⚙ AI 设置</a>
+            <label style="display:flex;align-items:center;gap:4px;font-size:0.85em;color:#a6adc8;cursor:pointer;margin-left:8px;">
+                <input type="checkbox" id="auto-ai-rescan" style="accent-color:#89b4fa;">
+                重扫后自动 AI 分析
+            </label>
             <div id="analyze-progress-bar" style="display:none;flex:1;margin-left:8px;">
                 <div style="background:var(--surface);border-radius:6px;height:8px;overflow:hidden;">
                     <div id="analyze-bar-fill" style="background:var(--blue);height:100%;width:0%;transition:width 0.3s;"></div>
@@ -704,7 +708,13 @@
             var btn = (evt && evt.target) || event.target;
             btn.disabled = true;
             btn.textContent = '启动中...';
-            const resp = await fetch('/project/{{ project.id }}/new-scan', { method: 'POST' });
+            var autoAI = document.getElementById('auto-ai-rescan');
+            var autoAiChecked = autoAI ? autoAI.checked : false;
+            var resp = await fetch('/project/{{ project.id }}/new-scan', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({auto_ai: autoAiChecked})
+            });
             if (resp.ok) {
                 const data = await resp.json();
                 window.location.href = '/scan/' + data.scan_id;

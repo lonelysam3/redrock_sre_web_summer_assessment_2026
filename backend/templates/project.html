@@ -38,8 +38,12 @@
                     {% endif %}
                 </div>
                 <!-- 开始扫描按钮，触发异步扫描 + 轮询 -->
-                <button class="btn btn-primary" onclick="startScan()">开始扫描</button>
+                <button class="btn btn-primary" id="start-scan-btn" onclick="startScan()">开始扫描</button>
             </div>
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:#a6adc8;cursor:pointer;margin-top:10px;">
+                <input type="checkbox" id="auto-ai-checkbox" style="accent-color:#89b4fa;">
+                🤖 扫描后自动 AI 分析
+            </label>
         </div>
 
         <!-- ========== 扫描历史列表 ========== -->
@@ -104,22 +108,28 @@
          *  4. 扫描完成后自动刷新页面
          */
         async function startScan() {
-            const btn = event.target;
-            btn.disabled = true;              // 禁用按钮防止重复点击
+            var btn = document.getElementById('start-scan-btn');
+            btn.disabled = true;
             btn.textContent = '扫描中...';
+            var autoAI = document.getElementById('auto-ai-checkbox');
+            var autoAiChecked = autoAI ? autoAI.checked : false;
 
             // 触发扫描
-            const resp = await fetch('/project/{{ project.id }}/new-scan', { method: 'POST' });
+            var resp = await fetch('/project/{{ project.id }}/new-scan', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({auto_ai: autoAiChecked})
+            });
             if (resp.ok) {
-                const data = await resp.json();
+                var data = await resp.json();
 
                 // 每 2 秒轮询一次扫描状态
-                const interval = setInterval(async () => {
-                    const s = await fetch(`/api/scans?project_id={{ project.id }}`);
-                    const scans = await s.json();
+                var interval = setInterval(async function() {
+                    var s = await fetch('/api/scans?project_id={{ project.id }}');
+                    var scans = await s.json();
 
                     // 查找当前扫描任务
-                    const scan = scans.find(s => s.id === data.scan_id);
+                    var scan = scans.find(function(s) { return s.id === data.scan_id; });
                     if (scan && scan.status !== 'running') {
                         clearInterval(interval);  // 停止轮询
                         location.reload();        // 刷新页面展示结果

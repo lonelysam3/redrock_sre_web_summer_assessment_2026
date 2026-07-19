@@ -243,13 +243,8 @@ def create_app() -> Flask:
         """
         触发新扫描（API 端点，前端 JS 调用）。
 
-        流程:
-          1. 创建 ScanTask 记录（状态设为 "running"）
-          2. 启动后台线程执行扫描
-          3. 前台立即返回任务 ID，前端通过轮询获取结果
-
-        参数:
-            project_id: 项目 ID
+        请求体 JSON（可选）:
+            { "auto_ai": true }  — 扫描后自动 AI 分析
 
         返回:
             JSON: { scan_id, status: "running" }
@@ -258,20 +253,27 @@ def create_app() -> Flask:
         if not project:
             return jsonify({"error": "项目不存在"}), 404
 
+        auto_ai = False
+        try:
+            data = request.get_json(silent=True) or {}
+            auto_ai = data.get("auto_ai", False)
+        except Exception:
+            pass
+
         # 创建扫描任务记录
         scan = ScanTask(
             project_id=project_id,
-            status="running",                    # 立即标记为运行中
+            status="running",
             started_at=datetime.utcnow(),
         )
         db.session.add(scan)
-        db.session.commit()  # 先提交以获取 scan.id
+        db.session.commit()
 
-        # 启动后台线程执行扫描（不阻塞 HTTP 响应）
+        # 启动后台线程
         thread = threading.Thread(
             target=_run_scan_background,
-            args=(app, scan.id, project.repo_path, project.language),
-            daemon=True,  # 守护线程：主进程退出时自动终止
+            args=(app, scan.id, project.repo_path, project.language, auto_ai),
+            daemon=True,
         )
         thread.start()
 
@@ -481,20 +483,17 @@ def _commit_with_retry(db_session, label: str = "", max_retries: int = 5, delay:
                 raise
 
 
-def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: str):
+def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: str, auto_ai: bool = False):
     """
-    后台线程：执行代码扫描（v2 — 三级流水线 + AI 自动验证）。
-
-    流程:
-      1. Stage 1: Source-Sink 污点追踪分析
-      2. Stage 2: 数据流分析（防护检测 + 利用难度评定）
-      3. Stage 3: AST 模式分析（参数化检测 + 安全模式降级）
-      4. AI Payload 构建（为每个漏洞生成针对性攻击载荷）
-      5. AI 自动验证（判断 Payload 是否有效）
-      6. 标记漏洞: confirmed（验证成功）/ potential（无法确认）
+    后台线程：执行代码扫描（v2 — 四级流水线 + AI 自动验证）。
 
     参数:
-        app:          Flask 应用实例（用于创建 app context）
+        app:          Flask 应用实例
+        scan_id:      扫描任务 ID
+        project_path: 项目源码路径
+        language:     编程语言
+        auto_ai:      扫描完成后是否自动触发 AI 分析
+    """
         scan_id:      扫描任务 ID
         project_path: 项目源码路径
         language:     编程语言
@@ -591,22 +590,23 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
                 print(f"[ERROR] 无法更新扫描状态: {e2}")
 
     # ---- 扫描完成后自动触发 AI 深度分析 ----
-    try:
-        client = get_ai_client()
-        if client.is_configured() and scan.vulns_found > 0:
-            with app.app_context():
-                s = db.session.get(ScanTask, scan_id)
-                if s and s.status == "done":
-                    s.status = "analyzing"
-                    db.session.commit()
-                analyzed, total = _run_ai_analysis_on_vulns(scan_id, project_path, client, sys.stderr)
-                if s:
-                    s.status = "done" if analyzed >= total else "done"
-                    db.session.commit()
-        else:
-            print("[INFO] AI 未配置，跳过 AI 深度分析")
-    except Exception as e:
-        print(f"[ERROR] AI 深度分析失败: {e}")
+    if auto_ai:
+        try:
+            client = get_ai_client()
+            if client.is_configured() and scan.vulns_found > 0:
+                with app.app_context():
+                    s = db.session.get(ScanTask, scan_id)
+                    if s and s.status == "done":
+                        s.status = "analyzing"
+                        db.session.commit()
+                    analyzed, total = _run_ai_analysis_on_vulns(scan_id, project_path, client, sys.stderr)
+                    if s:
+                        s.status = "done" if analyzed >= total else "done"
+                        db.session.commit()
+            else:
+                print("[INFO] AI 未配置，跳过 AI 深度分析")
+        except Exception as e:
+            print(f"[ERROR] AI 深度分析失败: {e}")
 
 
 def _run_ai_analysis(app: Flask, scan_id: int):
