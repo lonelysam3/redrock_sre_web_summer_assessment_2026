@@ -88,11 +88,26 @@ Flask 路由层 — REST API + 页面渲染
 
 扫描完成后自动将发现的漏洞逐条发送给 LLM 进行深度分析，生成形成原因、攻击方式和修复建议。
 
-- `ai/client.py` — AI 客户端，封装 analyze_single / analyze_batch / verify_vulnerability
+- `ai/client.py` — AI 客户端，封装 analyze_single / analyze_batch / analyze_single_with_tools
 - `ai/prompts.py` — System Prompt + 结构化的 JSON 分析模板，要求 AI 输出 CWE 编号、OWASP 分类、攻击场景列表
 - `ai/settings_bridge.py` — 适配 ai_chat_core 库的配置桥接
 - 版本上下文注入：PHP 项目的分析 prompt 自动包含目标 PHP 版本、DSN charset 可靠性、废弃 API 状态等信息
 - 跨文件漏洞分析：同时提供 Source 文件和 Sink 文件的代码上下文
+
+### MCP 工具调用
+
+AI 分析过程中可以调用 6 个代码搜索工具，自主探索源码中的危险函数和用户输入：
+
+- `search_dangerous_calls` — 搜索文件中所有危险函数调用（SQL 查询、命令执行、文件包含、反序列化等），按类别分组返回
+- `search_user_inputs` — 搜索文件中所有用户输入入口（`$_GET`、`$_POST`、`php://input` 等 11 种）
+- `read_file_region` — 按行号读取代码上下文
+- `search_project` — 跨文件正则搜索（如搜索 `new PDO` 定位数据库连接）
+- `trace_variable_flow` — 追踪变量在文件中的所有赋值和使用位置
+- `list_project_files` — 列出项目文件结构
+
+AI 收到漏洞后转入三轮工具调用循环：自主搜索 Source/Sink 点 → 追踪变量传播 → 读取上下文 → 综合判断输出结果。
+
+- `engine/mcp_tools.py` — MCP 工具定义、执行器和 prompt 生成
 
 ## 数据模型
 
@@ -118,6 +133,7 @@ backend/
 │   ├── data_flow_analyzer.py # 数据流独立扫描 + 跨文件检测
 │   ├── ast_analyzer.py       # AST 模式分析 + 宽字节/PDO检测
 │   ├── call_graph_analyzer.py# 调用图跨函数分析
+│   ├── mcp_tools.py           # MCP 工具集（AI 自主搜索源码）
 │   ├── sources_php.py        # PHP Source 点定义
 │   ├── sinks_php.py          # PHP Sink 点定义
 │   ├── payload_builder.py    # AI Payload 构建
