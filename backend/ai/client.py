@@ -188,28 +188,16 @@ class AIClient:
         )
 
         # 工具调用循环
-        conversation = [initial_prompt]
-        final_result = None
+        conversation_history = initial_prompt
 
         for round_num in range(max_tool_rounds):
-            # 构建当前轮的消息（包含历史）
             system_with_tools = SYSTEM_PROMPT
             if tool_executor:
                 system_with_tools += "\n\n" + tool_prompt
 
-            if round_num == 0:
-                user_msg = initial_prompt
-            else:
-                user_msg = (
-                    f"上一轮工具调用结果已返回。请继续分析，如果需要更多信息可以再次调用工具。"
-                    f"如果分析已完成，请输出最终的 JSON 分析结果。"
-                )
-
-            response = self._chat_raw(user_msg, system_prompt=system_with_tools)
+            response = self._chat_raw(conversation_history, system_prompt=system_with_tools)
             if not response:
                 break
-
-            conversation.append(response)
 
             # 尝试解析工具调用
             if tool_executor:
@@ -224,13 +212,14 @@ class AIClient:
                             f"[Tool: {tc['name']}]\n{result[:2000]}\n[/Tool]"
                         )
 
-                    # 将工具结果附加到对话
                     if tool_results:
                         result_msg = "工具调用结果：\n\n" + "\n\n".join(tool_results)
-                        # 将结果追加到对话历史
-                        if round_num < max_tool_rounds - 1:
-                            # 不是最后一轮，把结果作为下一轮的上下文
-                            initial_prompt += "\n\n---\n## 工具调用结果（第 {} 轮）\n".format(round_num + 1) + result_msg
+                        conversation_history += (
+                            "\n\n---\n## 第 {} 轮工具调用\n".format(round_num + 1)
+                            + response
+                            + "\n\n" + result_msg
+                            + "\n\n请基于以上工具调用结果继续分析。如果分析完成，输出最终的 JSON 结果。"
+                        )
                         continue
 
             # 无工具调用，尝试解析最终 JSON
@@ -239,8 +228,8 @@ class AIClient:
                 break
 
         # 最后一轮后尝试解析
-        if not final_result and conversation:
-            final_result = self._parse_json(conversation[-1])
+        if not final_result and response:
+            final_result = self._parse_json(response)
 
         return final_result
 
