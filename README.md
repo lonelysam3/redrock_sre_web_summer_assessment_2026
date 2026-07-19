@@ -29,8 +29,8 @@ Flask 路由层 — REST API + 页面渲染
 |------|------|
 | Web 框架 | Flask + Jinja2 |
 | 数据库 | SQLite + SQLAlchemy ORM |
-| AST 解析 | tree-sitter (Python/JS/PHP/C grammars) |
-| 污点追踪 | 自研 TaintGraph + BFS 路径搜索 |
+| AST 解析 | tree-sitter (Python/PHP/C/C++ grammars) |
+| 污点追踪 | 基于邻接表的变量传播图 + BFS 路径搜索 |
 | AI 集成 | ai_chat_core，支持 DeepSeek / OpenAI / 自定义 API |
 | 前端 | Vanilla JS，无框架依赖 |
 
