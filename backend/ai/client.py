@@ -189,6 +189,8 @@ class AIClient:
 
         # 工具调用循环
         conversation_history = initial_prompt
+        final_result = None
+        last_response = None
 
         for round_num in range(max_tool_rounds):
             system_with_tools = SYSTEM_PROMPT
@@ -198,6 +200,7 @@ class AIClient:
             response = self._chat_raw(conversation_history, system_prompt=system_with_tools)
             if not response:
                 break
+            last_response = response
 
             # 尝试解析工具调用
             if tool_executor:
@@ -209,27 +212,28 @@ class AIClient:
                             tc["name"], tc.get("arguments", {})
                         )
                         tool_results.append(
-                            f"[Tool: {tc['name']}]\n{result[:2000]}\n[/Tool]"
+                            f"[{tc['name']} 结果]\n{result[:3000]}"
                         )
 
                     if tool_results:
-                        result_msg = "工具调用结果：\n\n" + "\n\n".join(tool_results)
-                        conversation_history += (
-                            "\n\n---\n## 第 {} 轮工具调用\n".format(round_num + 1)
+                        conversation_history = (
+                            initial_prompt
+                            + "\n\n---\n## 第 {} 轮\n".format(round_num + 1)
                             + response
-                            + "\n\n" + result_msg
-                            + "\n\n请基于以上工具调用结果继续分析。如果分析完成，输出最终的 JSON 结果。"
+                            + "\n\n工具执行结果：\n\n"
+                            + "\n\n".join(tool_results)
+                            + "\n\n请基于以上结果继续。如分析完成，输出 JSON 结果（不要再用 ```json 包裹）。"
                         )
                         continue
 
-            # 无工具调用，尝试解析最终 JSON
+            # 无工具调用，解析最终 JSON
             final_result = self._parse_json(response)
             if final_result:
                 break
 
-        # 最后一轮后尝试解析
-        if not final_result and response:
-            final_result = self._parse_json(response)
+        # 最后一轮后仍尝试解析
+        if not final_result and last_response:
+            final_result = self._parse_json(last_response)
 
         return final_result
 

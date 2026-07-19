@@ -400,39 +400,40 @@ class MCPToolExecutor:
 def build_tool_system_prompt() -> str:
     """生成描述可用工具的 System Prompt 片段"""
 
-    tool_descriptions = []
-    for t in MCP_TOOLS:
-        params_desc = json.dumps(t.parameters, ensure_ascii=False, indent=2)
-        tool_descriptions.append(f"""### {t.name}
-{t.description}
-
-参数:
-```json
-{params_desc}
-```
-""")
-
-    tools_text = "\n".join(tool_descriptions)
+    tool_list = "\n".join(
+        f"- **{t.name}**: {t.description}"
+        for t in MCP_TOOLS
+    )
 
     return f"""## 可用工具
 
-你可以调用以下工具来搜索和分析代码。在回复中需要调用工具时，
-使用以下格式（可在一个回复中请求多个工具调用）：
+你可以调用以下工具来搜索和分析项目代码：
+
+{tool_list}
+
+### 工具调用方式
+
+需要调用工具时，在回复中输出如下 JSON 代码块（可以一次调用多个工具）：
 
 ```json
-{{{{
+{{
   "tool_calls": [
-    {{{{
-      "name": "工具名",
-      "arguments": {{{{"参数": "值"}}}}
-    }}}}
+    {{"name": "search_user_inputs", "arguments": {{"file_path": "register.php"}}}},
+    {{"name": "search_dangerous_calls", "arguments": {{"file_path": "register.php"}}}}
   ]
-}}}}
+}}
 ```
 
-系统会执行工具并返回结果，你可以基于结果继续分析。
+系统会执行这些工具并将结果返回给你。收到结果后：
+- 如需更多信息，继续调用工具
+- 如果分析完成，输出最终分析结果的 JSON
 
-{tools_text}"""
+### 提示
+- 优先用 search_user_inputs 和 search_dangerous_calls 定位 Source 和 Sink
+- 用 read_file_region 读取关键代码上下文
+- 用 trace_variable_flow 追踪变量从 Source 到 Sink 的传播路径
+- 用 search_project 做跨文件搜索
+- 工具调用结果中的 file_path 可用于后续 read_file_region 调用"""
 
 
 def parse_tool_calls(response: str) -> list[dict]:
