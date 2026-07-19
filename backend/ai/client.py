@@ -340,7 +340,7 @@ class AIClient:
                 user_message=prompt,
                 system_prompt=system_prompt,
                 temperature=0.3,
-                max_tokens=256,
+                max_tokens=4096,
             )
         except Exception as e:
             print(f"[ERROR] AI API 调用失败: {e}")
@@ -363,6 +363,16 @@ class AIClient:
         if match:
             try:
                 return json.loads(match.group(1).strip())
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # 策略 2b：手动剥离 ``` 标记（处理结尾缺 ``` 的截断响应）
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r'^```\w*\s*', '', stripped, count=1)
+            stripped = re.sub(r'\s*```\s*$', '', stripped)
+            try:
+                return json.loads(stripped)
             except (json.JSONDecodeError, ValueError):
                 pass
 
