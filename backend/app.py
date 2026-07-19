@@ -592,6 +592,7 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
 
     # ---- 扫描完成后自动触发 AI 深度分析 ----
     if auto_ai:
+        print(f"[SCAN] auto_ai=True, starting AI analysis check...")
         try:
             client = get_ai_client()
             print(f"[SCAN] AI client: key={'***' if client.api_key else 'EMPTY'}, url={client.base_url}, model={client.model}, configured={client.is_configured()}")
