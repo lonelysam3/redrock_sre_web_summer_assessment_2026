@@ -777,6 +777,29 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
                 )
                 ctx = f"=== SOURCE 文件: {source_file} ===\n{src_ctx}\n\n=== SINK 文件: {sink_file} ===\n{ctx}"
 
+            # ---- 预取 data_flow / description 中引用的其他文件 ----
+            import re as _re
+            ref_files = set()
+            for text_field in [v.data_flow or "", v.description or "", v.sink_code or ""]:
+                for m in _re.finditer(r'([\w./-]+\.(?:php|py|c|cpp|h))\b', text_field):
+                    candidate = m.group(1)
+                    # 尝试匹配项目中的实际文件
+                    for fp in [os.path.join(project_path, candidate) if project_path else "",
+                               os.path.join(os.path.dirname(v.file_path), candidate) if v.file_path else ""]:
+                        if fp and os.path.isfile(fp):
+                            ref_files.add(fp)
+                            break
+            # 去掉已经在 context 中的文件
+            ref_files.discard(sink_file)
+            ref_files.discard(source_file)
+            # 预取并追加到 context
+            for rf in list(ref_files)[:3]:  # 最多 3 个额外文件
+                try:
+                    rf_ctx = extract_source_context(rf, 1, min(60, sum(1 for _ in open(rf, encoding='utf-8', errors='ignore'))), context_lines=3)
+                    ctx += f"\n\n=== 引用的文件: {rf} ===\n{rf_ctx}"
+                except Exception:
+                    pass
+
             result = client.analyze_single_with_tools({
                 "file_path": v.file_path,
                 "vuln_type": v.vuln_type,
