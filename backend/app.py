@@ -594,6 +594,7 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
     if auto_ai:
         try:
             client = get_ai_client()
+            print(f"[SCAN] AI client: key={'***' if client.api_key else 'EMPTY'}, url={client.base_url}, model={client.model}, configured={client.is_configured()}")
             if client.is_configured() and scan.vulns_found > 0:
                 with app.app_context():
                     s = db.session.get(ScanTask, scan_id)
