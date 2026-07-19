@@ -405,7 +405,7 @@ def build_tool_system_prompt() -> str:
         for t in MCP_TOOLS
     )
 
-    return f"""## 可用工具
+    return """## 可用工具
 
 你可以调用以下工具来搜索和分析项目代码：
 
@@ -417,12 +417,12 @@ def build_tool_system_prompt() -> str:
 
 **推荐格式（简洁）：**
 ```json
-[{"name": "search_user_inputs", "arguments": {"file_path": "register.php"}}]
+[{{"name": "search_user_inputs", "arguments": {{"file_path": "register.php"}}}}]
 ```
 
 **也支持：**
 ```json
-{"tool_calls": [{"name": "search_dangerous_calls", "arguments": {"file_path": "register.php"}}]}
+{{"tool_calls": [{{"name": "search_dangerous_calls", "arguments": {{"file_path": "register.php"}}}}]}}
 ```
 
 **或函数调用风格：**
@@ -437,7 +437,7 @@ search_dangerous_calls(file_path="register.php")
 - 用 read_file_region 读取关键代码上下文
 - 用 search_project(pattern="exec|system") 跨文件搜索危险函数
 - 工具返回的 file_path 可用于后续 read_file_region
-- 分析完成后输出最终 JSON，不要再用 ```json 包裹"""
+- 分析完成后输出最终 JSON，不要再用 ```json 包裹""".format(tool_list=tool_list)
 
 
 def parse_tool_calls(response: str) -> list[dict]:
