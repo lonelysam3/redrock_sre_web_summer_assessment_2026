@@ -412,7 +412,7 @@
                         <span style="font-size:0.8em;color:#f9e2af;">⟶ Source: {{ v.source_file }}:{{ v.source_line }}</span>
                         {% endif %}
                         <!-- AI 分析按钮（已分析则禁用） -->
-                        <button class="btn btn-sm" onclick="analyzeVuln({{ v.id }})" {% if v.ai_is_vulnerable %}disabled{% endif %}>
+                        <button class="btn btn-sm" onclick="analyzeVuln({{ v.id }})">
                             🤖 AI 分析
                         </button>
                         <!-- 人工审核状态下拉框 -->
@@ -554,19 +554,37 @@
          * 分析完成后刷新页面展示结果
          */
         async function analyzeVuln(id) {
-            const btn = event.target;
+            var btn = event.target;
             btn.disabled = true;
             btn.textContent = '分析中...';
 
-            const resp = await fetch(`/api/vulns/${id}/analyze`, { method: 'POST' });
-            if (resp.ok) {
-                location.reload();
-            } else {
-                const err = await resp.json();
-                if (err.error === 'AI 未配置') {
-                    alert('⚠️ AI 尚未配置\n\n请先前往设置页面配置：\n1. API Key\n2. Base URL\n3. 模型名称\n\n配置完成后即可使用 AI 分析功能。');
+            try {
+                var controller = new AbortController();
+                var timeout = setTimeout(function() { controller.abort(); }, 120000);
+
+                var resp = await fetch('/api/vulns/' + id + '/analyze', {
+                    method: 'POST',
+                    signal: controller.signal
+                });
+                clearTimeout(timeout);
+
+                if (resp.ok) {
+                    location.reload();
                 } else {
-                    alert('AI 分析失败: ' + (err.error || '未知错误'));
+                    var err = await resp.json().catch(function() { return {}; });
+                    if (err.error === 'AI 未配置') {
+                        alert('AI 尚未配置，请先在设置页面配置 API Key');
+                    } else {
+                        alert('AI 分析失败: ' + (err.error || '未知错误'));
+                    }
+                    btn.disabled = false;
+                    btn.textContent = '🤖 AI 分析';
+                }
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    alert('AI 分析超时（2分钟），请重试');
+                } else {
+                    alert('网络错误: ' + e.message);
                 }
                 btn.disabled = false;
                 btn.textContent = '🤖 AI 分析';

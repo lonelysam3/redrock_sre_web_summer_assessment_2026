@@ -116,10 +116,6 @@ def analyze_vuln(vuln_id: int):
     if not v:
         return jsonify({"error": "不存在"}), 404
 
-    # 已分析过则跳过
-    if v.ai_is_vulnerable:
-        return jsonify(_serialize(v))
-
     from ai.client import get_ai_client
     from utils.code_extractor import extract_source_context
 
