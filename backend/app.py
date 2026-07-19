@@ -593,23 +593,26 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
     # ---- 扫描完成后自动触发 AI 深度分析 ----
     if auto_ai:
         print(f"[SCAN] auto_ai=True, starting AI analysis check...")
-        try:
-            client = get_ai_client()
-            print(f"[SCAN] AI client: key={'***' if client.api_key else 'EMPTY'}, url={client.base_url}, model={client.model}, configured={client.is_configured()}")
-            if client.is_configured() and scan.vulns_found > 0:
-                with app.app_context():
-                    s = db.session.get(ScanTask, scan_id)
-                    if s and s.status == "done":
+        with app.app_context():
+            try:
+                client = get_ai_client()
+                print(f"[SCAN] AI client: key={'***' if client.api_key else 'EMPTY'}, url={client.base_url}, model={client.model}, configured={client.is_configured()}")
+                s = db.session.get(ScanTask, scan_id)
+                if client.is_configured() and s and s.vulns_found > 0:
+                    if s.status == "done":
                         s.status = "analyzing"
                         db.session.commit()
                     analyzed, total = _run_ai_analysis_on_vulns(scan_id, project_path, client, sys.stderr)
+                    s = db.session.get(ScanTask, scan_id)
                     if s:
-                        s.status = "done" if analyzed >= total else "done"
+                        s.status = "done"
                         db.session.commit()
-            else:
-                print("[INFO] AI 未配置，跳过 AI 深度分析")
-        except Exception as e:
-            print(f"[ERROR] AI 深度分析失败: {e}")
+                else:
+                    print("[INFO] AI 未配置，跳过 AI 深度分析")
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] AI 深度分析失败: {e}")
+                traceback.print_exc()
 
 
 def _run_ai_analysis(app: Flask, scan_id: int):
