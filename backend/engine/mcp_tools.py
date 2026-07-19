@@ -413,59 +413,77 @@ def build_tool_system_prompt() -> str:
 
 ### 工具调用方式
 
-需要调用工具时，在回复中输出如下 JSON 代码块（可以一次调用多个工具）：
+需要调用工具时，输出一个 JSON 代码块。支持以下任意格式：
 
+**推荐格式（简洁）：**
 ```json
-{{
-  "tool_calls": [
-    {{"name": "search_user_inputs", "arguments": {{"file_path": "register.php"}}}},
-    {{"name": "search_dangerous_calls", "arguments": {{"file_path": "register.php"}}}}
-  ]
-}}
+[{"name": "search_user_inputs", "arguments": {"file_path": "register.php"}}]
 ```
 
-系统会执行这些工具并将结果返回给你。收到结果后：
-- 如需更多信息，继续调用工具
-- 如果分析完成，输出最终分析结果的 JSON
+**也支持：**
+```json
+{"tool_calls": [{"name": "search_dangerous_calls", "arguments": {"file_path": "register.php"}}]}
+```
+
+**或函数调用风格：**
+```
+search_dangerous_calls(file_path="register.php")
+```
+
+系统会执行工具并返回结果。收到结果后继续或输出最终 JSON。
 
 ### 提示
-- 优先用 search_user_inputs 和 search_dangerous_calls 定位 Source 和 Sink
+- 优先 search_user_inputs + search_dangerous_calls 定位 Source/Sink
 - 用 read_file_region 读取关键代码上下文
-- 用 trace_variable_flow 追踪变量从 Source 到 Sink 的传播路径
-- 用 search_project 做跨文件搜索
-- 工具调用结果中的 file_path 可用于后续 read_file_region 调用"""
+- 用 search_project(pattern="exec|system") 跨文件搜索危险函数
+- 工具返回的 file_path 可用于后续 read_file_region
+- 分析完成后输出最终 JSON，不要再用 ```json 包裹"""
 
 
 def parse_tool_calls(response: str) -> list[dict]:
     """从 AI 回复中解析工具调用请求"""
     calls = []
 
-    # 匹配 ```json ... ``` 中的 tool_calls
-    json_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
-    if json_match:
+    # 策略 1： ```json ... ``` 中的 tool_calls
+    for m in re.finditer(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response):
         try:
-            data = json.loads(json_match.group(1))
+            data = json.loads(m.group(1))
             if "tool_calls" in data:
                 for tc in data["tool_calls"]:
-                    calls.append({
-                        "name": tc.get("name", ""),
-                        "arguments": tc.get("arguments", {}),
-                    })
+                    calls.append(dict(name=tc.get("name", ""), arguments=tc.get("arguments", {})))
         except (json.JSONDecodeError, TypeError):
             pass
+    if calls:
+        return calls
 
-    # 匹配独立的 tool_call 块
-    if not calls:
-        for m in re.finditer(
-            r'tool_call\s*:\s*(\w+)\s*\n\s*arguments\s*:\s*(\{.*?\})',
-            response, re.DOTALL | re.IGNORECASE
-        ):
-            try:
-                calls.append({
-                    "name": m.group(1),
-                    "arguments": json.loads(m.group(2)),
-                })
-            except (json.JSONDecodeError, TypeError):
-                pass
+    # 策略 2：裸 JSON 对象含 tool_calls（无 ``` 包裹）
+    for m in re.finditer(r'\{\s*"tool_calls"\s*:\s*\[([\s\S]*?)\]\s*\}', response):
+        try:
+            data = json.loads(m.group(0))
+            for tc in data.get("tool_calls", []):
+                calls.append(dict(name=tc.get("name", ""), arguments=tc.get("arguments", {})))
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if calls:
+        return calls
+
+    # 策略 3：单个裸 JSON 对象含 name + arguments
+    for m in re.finditer(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*(\{[^}]+\})\s*\}', response):
+        try:
+            calls.append(dict(name=m.group(1), arguments=json.loads(m.group(2))))
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if calls:
+        return calls
+
+    # 策略 4：tool_name(file_path="...") 函数调用风格
+    for m in re.finditer(r'(search_\w+|read_file_\w+|trace_\w+|list_\w+)\s*\(\s*([^)]*)\s*\)', response):
+        name = m.group(1)
+        args_str = m.group(2)
+        args = {}
+        for am in re.finditer(r'''(\w+)\s*=\s*["']([^"']+)["']''', args_str):
+            args[am.group(1)] = am.group(2)
+        if args:
+            calls.append(dict(name=name, arguments=args))
 
     return calls

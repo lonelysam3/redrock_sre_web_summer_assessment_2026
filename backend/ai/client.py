@@ -191,23 +191,29 @@ class AIClient:
         conversation_history = initial_prompt
         final_result = None
         last_response = None
+        tool_rounds_used = 0
 
         for round_num in range(max_tool_rounds):
             system_with_tools = SYSTEM_PROMPT
-            if tool_executor:
+            has_tools = bool(tool_executor)
+            if has_tools:
                 system_with_tools += "\n\n" + tool_prompt
 
             response = self._chat_raw(conversation_history, system_prompt=system_with_tools)
             if not response:
+                print(f"[MCP] 第 {round_num+1} 轮 AI 无响应")
                 break
             last_response = response
 
             # 尝试解析工具调用
             if tool_executor:
                 tool_calls = parse_tool_calls(response)
+                print(f"[MCP] 第 {round_num+1} 轮: 解析到 {len(tool_calls)} 个工具调用")
                 if tool_calls:
+                    tool_rounds_used = round_num + 1
                     tool_results = []
                     for tc in tool_calls:
+                        print(f"[MCP] 执行: {tc['name']}({tc.get('arguments', {})})")
                         result = tool_executor.execute(
                             tc["name"], tc.get("arguments", {})
                         )
@@ -225,15 +231,21 @@ class AIClient:
                             + "\n\n请基于以上结果继续。如分析完成，输出 JSON 结果（不要再用 ```json 包裹）。"
                         )
                         continue
+            else:
+                print(f"[MCP] 第 {round_num+1} 轮: tool_executor 为 None，跳过工具检测")
 
             # 无工具调用，解析最终 JSON
             final_result = self._parse_json(response)
             if final_result:
+                print(f"[MCP] 第 {round_num+1} 轮: 解析到最终 JSON 结果")
                 break
 
         # 最后一轮后仍尝试解析
         if not final_result and last_response:
             final_result = self._parse_json(last_response)
+
+        if tool_rounds_used == 0 and has_tools and not final_result:
+            print(f"[MCP] AI 未调用任何工具且未返回有效 JSON，首轮回复前 200 字符: {last_response[:200] if last_response else 'None'}")
 
         return final_result
 
