@@ -43,6 +43,7 @@
 """
 from pathlib import Path
 from dataclasses import dataclass, field
+import re
 
 from engine.python_scanner import PythonScanner
 from engine.c_scanner import CScanner
@@ -81,6 +82,10 @@ class PipelineResult:
     final_vulns: list[dict] = field(default_factory=list)
     final_count: int = 0
 
+    # PHP 版本解析结果
+    resolved_php_version: str = ""
+    php_version_auto_detected: bool = False
+
     # 统计
     total_files: int = 0
     errors: list[str] = field(default_factory=list)
@@ -98,7 +103,7 @@ class AnalysisPipeline:
         self.ast_analyzer = ASTAnalyzer()
         self.call_graph_analyzer = CallGraphAnalyzer()
 
-    def run(self, project_path: str, language: str) -> PipelineResult:
+    def run(self, project_path: str, language: str, php_version: str | None = None) -> PipelineResult:
         """
         四级独立分析流水线。
         四个阶段完全独立扫描，互不知晓对方结果，最后一次性合并去重。
@@ -107,12 +112,25 @@ class AnalysisPipeline:
         Stage 2: 数据流 — 正则模式检测 Source + Sink 同块
         Stage 3: AST 模式 — 危险函数组合 / 反序列化 / 变量覆盖
         Stage 4: 调用图 — 跨函数跨文件调用链分析
+
+        参数:
+            php_version: PHP 版本号字符串（如 "5.0", "7.4"），仅 PHP 项目生效。
+                         为空时默认 UNKNOWN（所有规则生效）。
         """
         result = PipelineResult()
 
         # ---- 收集源文件 ----
         source_code_map = self._collect_source_files(project_path, language)
         result.total_files = len(source_code_map)
+
+        # ---- 解析 PHP 版本（用户选择优先，否则自动检测） ----
+        if language == "php":
+            from engine.rule_engine import resolve_php_version
+            resolved, auto = resolve_php_version(php_version, source_code_map)
+            result.resolved_php_version = resolved
+            result.php_version_auto_detected = auto
+            self.ast_analyzer.set_php_version(resolved)
+            print(f"[PIPELINE] PHP 版本: {resolved} {'(自动检测)' if auto else '(用户指定)'}")
 
         all_vulns: list[dict] = []
 
@@ -161,9 +179,10 @@ class AnalysisPipeline:
         all_vulns.extend(stage4_vulns)
 
         # ================================================================
-        # 合并去重（唯一一次，四个阶段均不知晓彼此结果）
+        # 合并去重 → 过滤无 source 的误报 → 输出最终结果
         # ================================================================
         final_vulns = self._deduplicate(all_vulns)
+        final_vulns = self._filter_no_source(final_vulns, source_code_map)
 
         result.final_vulns = final_vulns
         result.final_count = len(final_vulns)
@@ -195,6 +214,18 @@ class AnalysisPipeline:
             # 取相关漏洞类型中第一个
             if f.related_vuln_types:
                 vuln_type = f.related_vuln_types[0]
+            # 模式名 → 可读标签
+            pattern_labels = {
+                "dangerous_combo": "危险函数组合",
+                "blacklist_filter": "不安全的防护措施",
+                "extract_override": "变量覆盖风险",
+                "string_concat_sql": "SQL 字符串拼接",
+                "magic_method_chain": "魔术方法链风险",
+            }
+            data_flow_label = pattern_labels.get(
+                f.pattern.value, f"AST模式({f.pattern.value})"
+            )
+
             vulns.append({
                 "file_path": f.file_path,
                 "line_number": f.line_number,
@@ -202,9 +233,9 @@ class AnalysisPipeline:
                 "vuln_type": vuln_type,
                 "severity": "medium",
                 "language": language,
-                "source_code": "",
-                "sink_code": f.evidence,
-                "data_flow": "",
+                "source_code": f.evidence,
+                "sink_code": f.description,
+                "data_flow": f"AST分析 — {data_flow_label}",
                 "pipeline_stage": "ast",
                 "confidence": f.confidence,
                 "description": f.description,
@@ -272,6 +303,76 @@ class AnalysisPipeline:
                 seen.add(key)
                 deduped.append(v)
         return deduped
+
+    def _filter_no_source(self, vulns: list[dict],
+                          source_code_map: dict[str, str]) -> list[dict]:
+        """
+        过滤无 source 的误报：只有 sink 没有 source 的漏洞直接排除。
+
+        对于需要用户输入的漏洞类型（SQL注入、XSS、命令执行等），
+        如果漏洞所在文件中不存在任何用户输入入口，则视为误报。
+        AST 阶段的发现（结构性问题，非数据流）不受此限制。
+        """
+        # 需要用户输入的漏洞类型
+        INPUT_DEPENDENT_TYPES = {
+            "sql_injection", "command_execution", "ssrf",
+            "path_traversal", "arbitrary_file_read", "xss",
+            "file_upload", "deserialization",
+        }
+        # 不需要 source 的类型 + 阶段
+        SKIP_FILTER_STAGES = {"ast"}      # AST 发现是结构性问题，不依赖用户输入
+        SKIP_FILTER_TYPES = {
+            "wide_byte_injection", "deprecated_api",
+        }
+
+        # PHP 用户输入模式
+        PHP_SOURCE_PATTERNS = [
+            r'\$_GET\b', r'\$_POST\b', r'\$_REQUEST\b',
+            r'\$_COOKIE\b', r'\$_SERVER\b', r'\$_FILES\b',
+            r'\$_SESSION\b', r'\$_ENV\b',
+            r"getenv\s*\(", r"php://input",
+            r"file_get_contents\s*\(\s*['\"]php://",
+            r"getallheaders\s*\(", r"\$argv\b",
+        ]
+        # Python 用户输入模式
+        PY_SOURCE_PATTERNS = [
+            r'request\.(?:args|form|json|data|values)\.get\b',
+            r'input\s*\(', r'sys\.argv\b',
+        ]
+
+        filtered = []
+        for v in vulns:
+            vuln_type = v.get("vuln_type", "")
+            language = v.get("language", "")
+            file_path = v.get("file_path", "")
+
+            # 不需要 source 的类型直接保留
+            if vuln_type in SKIP_FILTER_TYPES:
+                filtered.append(v)
+                continue
+
+            # AST 阶段：结构性问题，不依赖用户输入
+            if v.get("pipeline_stage") in SKIP_FILTER_STAGES:
+                filtered.append(v)
+                continue
+
+            # 需要 source 且非 AST 阶段：检查文件中有没有用户输入
+            if vuln_type in INPUT_DEPENDENT_TYPES:
+                file_code = source_code_map.get(file_path, "")
+                if not file_code:
+                    # 文件找不到，保守保留
+                    filtered.append(v)
+                    continue
+
+                patterns = PHP_SOURCE_PATTERNS if language == "php" else PY_SOURCE_PATTERNS
+                has_source = any(re.search(p, file_code) for p in patterns)
+                if not has_source:
+                    # 没有用户输入 → 误报，跳过
+                    continue
+
+            filtered.append(v)
+
+        return filtered
 
     def _collect_source_files(self, project_path: str, language: str) -> dict[str, str]:
         """

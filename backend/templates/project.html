@@ -23,6 +23,16 @@
             <div class="flex-between">
                 <div>
                     <strong>语言：</strong> <span class="badge">{{ project.language }}</span>
+                    {% if project.language == 'php' %}
+                    <strong>PHP 版本：</strong>
+                    {% if project.php_version and project.php_version.startswith('auto(') %}
+                    <span class="badge" style="background:#45475a;color:#a6e3a1;">🤖 自动检测 → {{ project.php_version[5:-1] }}</span>
+                    {% elif project.php_version %}
+                    <span class="badge" style="background:#45475a;">{{ project.php_version }}</span>
+                    {% else %}
+                    <span class="badge" style="background:#45475a;color:#888;">未设置</span>
+                    {% endif %}
+                    {% endif %}
                     {% if project.original_filename %}
                     <strong>文件：</strong> <code>{{ project.original_filename }}</code>
                     {% endif %}

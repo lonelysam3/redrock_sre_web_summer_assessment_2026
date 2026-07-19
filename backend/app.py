@@ -62,6 +62,10 @@ def _migrate_db():
             db.session.execute(
                 text("ALTER TABLE projects ADD COLUMN original_filename VARCHAR(500)")
             )
+        if "php_version" not in cols:
+            db.session.execute(
+                text("ALTER TABLE projects ADD COLUMN php_version VARCHAR(20)")
+            )
 
     # 为 vulnerabilities 表补充 AI 深度分析相关列（create_all 可能遗漏）
     if "vulnerabilities" in inspector.get_table_names():
@@ -74,6 +78,9 @@ def _migrate_db():
             ("ai_payload", "TEXT"),
             ("ai_payload_result", "TEXT"),
             ("ai_payload_evidence", "TEXT"),
+        ] + [
+            ("source_file", "VARCHAR(500)"),
+            ("source_line", "INTEGER"),
         ]
         for col_name, col_type in missing:
             if col_name not in cols:
@@ -501,11 +508,29 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
             # ---- 执行四级流水线扫描 ----
             print(f"[SCAN] 开始四级流水线扫描: {project_path} ({language})")
             from engine import scan_with_verification
+            from engine.rule_engine import resolve_php_version
             from ai.client import get_ai_client as _get_client
 
             ai_client = _get_client()
+            user_php = getattr(scan.project, 'php_version', None) if scan.project else None
+
+            # 解析最终 PHP 版本：用户选择优先，否则自动检测
+            if language == "php":
+                from engine.pipeline import AnalysisPipeline as _AP
+                _tmp_pipeline = _AP()
+                source_map = _tmp_pipeline._collect_source_files(project_path, language)
+                resolved_version, auto_detected = resolve_php_version(
+                    user_php, source_map
+                )
+                effective_version = resolved_version
+                if auto_detected and scan.project:
+                    scan.project.php_version = f"auto({resolved_version})"
+                    db.session.commit()
+            else:
+                effective_version = user_php
+
             vulns, verification_reports = scan_with_verification(
-                project_path, language, ai_client=None  # 跳过 AI 验证，仅跑流水线
+                project_path, language, ai_client=None, php_version=effective_version
             )
 
             # ---- 统计 ----
@@ -523,6 +548,8 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
                     scan_task_id=scan_id,
                     file_path=v["file_path"],
                     line_number=v.get("line_number", v.get("sink_line", 0)),
+                    source_file=v.get("source_file", None),
+                    source_line=v.get("source_line", None),
                     vuln_type=v.get("vuln_type", ""),
                     severity=v.get("severity", "medium"),
                     language=v.get("language", language),
@@ -693,47 +720,77 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
     """对扫描发现的所有漏洞逐个进行 AI 深度分析。log 可以是 stderr 或任何有 write/flush 的对象。"""
     import json as _json
     from utils.code_extractor import extract_source_context
+    from models import db, ScanTask
 
     # 兼容：如果传了 sys 模块而不是 sys.stderr
     if not hasattr(log, 'write'):
         import sys
         log = sys.stderr
 
+    # 获取 PHP 版本
+    php_version = ""
+    scan = db.session.get(ScanTask, scan_id)
+    if scan and scan.project:
+        php_version = scan.project.php_version or ""
+
     vulns = Vulnerability.query.filter_by(scan_task_id=scan_id).all()
     analyzed = 0
     for v in vulns:
         try:
-            # 从实际文件中提取代码，而非使用 DB 中可能为空的字段
-            actual_source = ""
-            actual_sink = ""
+            # 从实际文件中提取代码
+            actual_source = v.source_code or ""
+            actual_sink = v.sink_code or ""
+            sink_file = v.file_path
+            sink_line = v.line_number
+
+            # 跨文件漏洞：从 source 文件提取代码
+            source_file = getattr(v, 'source_file', None) or ""
+            if source_file and source_file != sink_file:
+                try:
+                    with open(source_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        sf_lines = f.readlines()
+                        sln = max(0, getattr(v, 'source_line', 1) - 1)
+                        if sln < len(sf_lines):
+                            actual_source = sf_lines[sln].rstrip()
+                except Exception:
+                    pass
+
+            # 从 sink 文件提取代码（回退到 DB 字段）
             try:
-                with open(v.file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                with open(sink_file, 'r', encoding='utf-8', errors='ignore') as f:
                     file_lines = f.readlines()
-                    ln = max(0, v.line_number - 1)
+                    ln = max(0, sink_line - 1)
                     if ln < len(file_lines):
-                        actual_sink = file_lines[ln].rstrip()
-                    # source 取 sink 前几行
-                    start = max(0, ln - 3)
-                    actual_source = "".join(file_lines[start:ln+1]).strip()
+                        actual_sink = file_lines[ln].rstrip() or actual_sink
             except Exception:
                 pass
 
             ctx = extract_source_context(
-                v.file_path,
-                max(1, v.line_number - 10),
-                v.line_number + 5,
+                sink_file,
+                max(1, sink_line - 10),
+                sink_line + 5,
                 context_lines=15,
             )
+            # 跨文件：追加 source 文件的上下文
+            if source_file and source_file != sink_file:
+                src_ctx = extract_source_context(
+                    source_file,
+                    max(1, getattr(v, 'source_line', 1) - 3),
+                    getattr(v, 'source_line', 1) + 3,
+                    context_lines=8,
+                )
+                ctx = f"=== SOURCE 文件: {source_file} ===\n{src_ctx}\n\n=== SINK 文件: {sink_file} ===\n{ctx}"
+
             result = client.analyze_single({
                 "file_path": v.file_path,
                 "vuln_type": v.vuln_type,
                 "severity": v.severity,
                 "language": v.language,
                 "data_flow": v.data_flow or "",
-                "source_code": actual_source or (v.source_code or ""),
-                "sink_code": actual_sink or (v.sink_code or ""),
+                "source_code": actual_source,
+                "sink_code": actual_sink,
                 "pipeline_stage": v.pipeline_stage or "",
-            }, ctx)
+            }, ctx, php_version=php_version)
 
             if result:
                 v.ai_analysis = _json.dumps(result, ensure_ascii=False)
@@ -772,14 +829,29 @@ def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto
             return
         try:
             from engine import scan_with_verification
+            from engine.rule_engine import resolve_php_version
             from ai.client import get_ai_client
             from models import Vulnerability
 
             _sys.stderr.write(f"[SCAN] start {scan_id}\n")
             _sys.stderr.flush()
 
+            user_php = getattr(scan.project, 'php_version', None) if scan.project else None
+
+            # 解析最终 PHP 版本
+            if language == "php":
+                from engine.pipeline import AnalysisPipeline
+                source_map = AnalysisPipeline()._collect_source_files(project_path, language)
+                resolved_version, auto_detected = resolve_php_version(user_php, source_map)
+                effective_version = resolved_version
+                if auto_detected and scan.project:
+                    scan.project.php_version = f"auto({resolved_version})"
+                    db.session.commit()
+            else:
+                effective_version = user_php
+
             # 不传 ai_client，跳过耗时的 AI Payload 验证，只跑四级流水线
-            vulns, _ = scan_with_verification(project_path, language, ai_client=None)
+            vulns, _ = scan_with_verification(project_path, language, ai_client=None, php_version=effective_version)
             n = len(vulns)
             _sys.stderr.write(f"[SCAN] got {n} vulns, committing...\n")
             _sys.stderr.flush()
@@ -794,6 +866,8 @@ def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto
                 db.session.add(Vulnerability(
                     scan_task_id=scan_id,
                     file_path=v["file_path"], line_number=v.get("line_number", 0),
+                    source_file=v.get("source_file", None),
+                    source_line=v.get("source_line", None),
                     vuln_type=v.get("vuln_type", ""), severity=v.get("severity", "medium"),
                     language=v.get("language", language),
                     source_code=v.get("source_code", ""), sink_code=v.get("sink_code", ""),

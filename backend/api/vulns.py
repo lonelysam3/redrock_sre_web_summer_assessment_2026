@@ -140,6 +140,14 @@ def analyze_vuln(vuln_id: int):
         v.line_number + 3,           # 到漏洞行后 3 行结束
     )
 
+    # 获取 PHP 版本（仅 PHP 项目生效）
+    php_version = ""
+    try:
+        if v.scan_task and v.scan_task.project:
+            php_version = v.scan_task.project.php_version or ""
+    except Exception:
+        pass
+
     # 调用 AI 进行分析
     result = client.analyze_single({
         "file_path": v.file_path,
@@ -150,7 +158,7 @@ def analyze_vuln(vuln_id: int):
         "source_code": v.source_code or "",
         "sink_code": v.sink_code or "",
         "pipeline_stage": v.pipeline_stage or "",
-    }, ctx)
+    }, ctx, php_version=php_version)
 
     # 如果 AI 返回了结果，写入数据库
     if result:
@@ -214,6 +222,14 @@ def analyze_all_vulns():
     failed = 0
     import json
 
+    # 获取 PHP 版本
+    php_version = ""
+    try:
+        if vulns and vulns[0].scan_task and vulns[0].scan_task.project:
+            php_version = vulns[0].scan_task.project.php_version or ""
+    except Exception:
+        pass
+
     for v in vulns:
         try:
             ctx = extract_source_context(
@@ -230,7 +246,7 @@ def analyze_all_vulns():
                 "source_code": v.source_code or "",
                 "sink_code": v.sink_code or "",
                 "pipeline_stage": v.pipeline_stage or "",
-            }, ctx)
+            }, ctx, php_version=php_version)
 
             if result:
                 v.ai_analysis = json.dumps(result, ensure_ascii=False)

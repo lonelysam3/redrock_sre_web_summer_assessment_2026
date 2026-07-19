@@ -153,10 +153,19 @@ def upload_project():
             "error": f"请选择编程语言: {', '.join(sorted(ALLOWED_LANGUAGES))}"
         }), 400
 
+    # ---- 2b. 项目名重复检查 ----
+    if Project.query.filter_by(name=name).first():
+        return jsonify({
+            "error": f"项目名 \"{name}\" 已存在，请使用其他名称"
+        }), 400
+
     # ---- 3. 是否自动扫描 ----
     auto_scan = request.form.get("auto_scan", "true").lower() != "false"
     # ---- 3b. 是否自动 AI 分析 ----
     auto_ai = request.form.get("auto_ai", "0") == "1"
+
+    # ---- 3c. PHP 版本（仅 PHP 项目生效） ----
+    php_version = (request.form.get("php_version", "") or "").strip() or None
 
     # ---- 4. 执行解压 ----
     extract_base = str(Config.EXTRACT_FOLDER)
@@ -190,6 +199,7 @@ def upload_project():
         language=language,
         source_type="upload",
         original_filename=file.filename,
+        php_version=php_version,
     )
     db.session.add(project)
     db.session.commit()

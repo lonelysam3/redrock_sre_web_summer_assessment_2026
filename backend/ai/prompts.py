@@ -109,6 +109,7 @@ ANALYSIS_PROMPT_TEMPLATE = """## 疑似漏洞信息
 - **语言**：{language}
 - **初步严重程度**：{severity}
 - **发现阶段**：{pipeline_stage}
+{php_version_context}
 
 {description}
 

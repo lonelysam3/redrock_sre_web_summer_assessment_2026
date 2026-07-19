@@ -69,9 +69,14 @@ class AIClient:
     # 单个漏洞深度分析
     # ================================================================
 
-    def analyze_single(self, vuln: dict, context_code: str = "") -> dict | None:
+    def analyze_single(self, vuln: dict, context_code: str = "", php_version: str = "") -> dict | None:
         """
         单个漏洞深度分析（含形成原因、攻击方式、修复方案）。
+
+        参数:
+            vuln:         漏洞信息字典
+            context_code: 漏洞上下文代码
+            php_version:  PHP 版本（仅 PHP 项目），用于上下文分析
 
         返回结构:
         {
@@ -82,6 +87,20 @@ class AIClient:
         }
         """
         vuln_type = vuln.get("vuln_type", "")
+
+        # 构建 PHP 版本上下文
+        php_ctx = ""
+        if php_version:
+            from engine.rule_engine import RuleEngine
+            eng = RuleEngine(php_version)
+            version_ctx = eng.get_wide_byte_context()
+            php_ctx = (
+                f"- **目标 PHP 版本**：{php_version}\n"
+                f"- **DSN charset 可靠性**：{'可信' if version_ctx['dsn_charset_trusted'] else '不可信（PHP < 5.3.6，DSN charset 被忽略）'}\n"
+                f"- **mysql_* 函数状态**：{version_ctx['mysql_functions_status']}\n"
+                f"- **preg_replace /e 状态**：{version_ctx['preg_replace_e_status']}\n"
+            )
+
         prompt = ANALYSIS_PROMPT_TEMPLATE.format(
             vuln_type_label=VULN_TYPE_LABELS.get(vuln_type, vuln_type),
             vuln_type=vuln_type,
@@ -93,6 +112,7 @@ class AIClient:
             source_code=vuln.get("source_code", ""),
             sink_code=vuln.get("sink_code", ""),
             pipeline_stage=vuln.get("pipeline_stage", ""),
+            php_version_context=php_ctx,
             context_code=context_code,
         )
         return self._chat(prompt)

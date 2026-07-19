@@ -72,9 +72,32 @@ class ASTAnalyzer:
 
     输入：源文件字典 {file_path: source_code}
     输出：AST 发现列表
+
+    支持 PHP 版本感知：通过 set_php_version() 设置版本后，
+    规则引擎会根据版本自动调整规则的生效范围和严重程度。
     """
 
-    # 参数化查询模式（安全）
+    # ... (existing class attributes)
+
+    def __init__(self):
+        self._source_map: dict[str, str] = {}
+        self._php_version: str | None = None
+        self._rule_engine = None  # 延迟初始化
+
+    def set_php_version(self, version: str):
+        """
+        设置目标 PHP 版本，启用版本感知分析。
+
+        设置后，宽字节注入等规则的严重程度会根据版本自动调整：
+          - PHP < 5.3.6: DSN charset 被忽略，宽字节风险 → critical
+          - PHP >= 5.3.6: DSN charset 可信，风险降低
+
+        参数:
+            version: PHP 版本字符串，如 "5.0", "5.3", "7.4", "8.0"
+        """
+        from engine.rule_engine import RuleEngine
+        self._php_version = version
+        self._rule_engine = RuleEngine(version)
     PARAMETERIZED_SQL_PATTERNS = [
         r'\bprepare\s*\(\s*["\']\s*(?:SELECT|INSERT|UPDATE|DELETE)',
         r'\bexecute\s*\(\s*\[.*\]\s*\)',  # PDO execute with array
@@ -138,6 +161,24 @@ class ASTAnalyzer:
             all_code
         ))
         self._project_has_gbk_sql = self._project_has_gbk and self._project_has_sql_query
+
+        # 项目级 PDO 初始化检测：找到 new PDO(...) 中的 charset
+        self._project_pdo_charset = ""
+        self._project_pdo_init_file = ""
+        pdo_init_match = re.search(
+            r'new\s+PDO\s*\([^)]*charset\s*=\s*(\w+)',
+            all_code, re.IGNORECASE
+        )
+        if pdo_init_match:
+            self._project_pdo_charset = pdo_init_match.group(1)
+            # 定位 PDO 初始化所在的文件
+            for fp, src in source_code_map.items():
+                if re.search(
+                    r'new\s+PDO\s*\([^)]*charset\s*=\s*' + re.escape(pdo_init_match.group(1)),
+                    src, re.IGNORECASE
+                ):
+                    self._project_pdo_init_file = fp
+                    break
 
         for file_path, source_code in source_code_map.items():
             lines = source_code.split("\n")
@@ -410,6 +451,10 @@ class ASTAnalyzer:
                 return fp
         return ""
 
+    def _find_pdo_init_file(self) -> str:
+        """找到项目中 PDO 初始化的文件（用于跨文件宽字节注入检测）"""
+        return getattr(self, '_project_pdo_init_file', '')
+
     def _find_weak_sql_escape(self, file_path: str, source_code: str,
                                lines: list[str]) -> list[ASTFinding]:
         """
@@ -546,5 +591,83 @@ class ASTAnalyzer:
                         evidence=line.strip(), is_safe=False,
                     ))
                     break
+
+        # 7. 宽字节注入：PDO 未禁用模拟预处理（版本感知）
+        if not self._project_emulate_safe and has_pdo:
+            has_prepare = bool(re.search(r'->prepare\s*\(', source_code))
+            has_execute_with_array = bool(re.search(r'->execute\s*\(\s*\[', source_code))
+            if has_prepare and has_execute_with_array:
+                # 使用规则引擎判定风险等级
+                risk_level = "medium"
+                extra_note = ""
+                if self._rule_engine:
+                    ctx = self._rule_engine.get_wide_byte_context()
+                    risk_level = ctx.get("emulate_risk_level", "medium")
+                    if not ctx.get("dsn_charset_trusted"):
+                        extra_note = (
+                            "（PHP {} < 5.3.6，DSN charset 被忽略，风险更高）"
+                            .format(self._php_version or "unknown")
+                        )
+
+                pdo_init_line = 0
+                pdo_charset = ""
+                for i, line in enumerate(lines, 1):
+                    m = re.search(
+                        r'new\s+PDO\s*\([^)]*charset\s*=\s*(\w+)',
+                        line, re.IGNORECASE
+                    )
+                    if m:
+                        pdo_init_line = i
+                        pdo_charset = m.group(1)
+                        break
+                if pdo_charset:
+                    findings.append(ASTFinding(
+                        file_path=file_path,
+                        line_number=pdo_init_line,
+                        pattern=ASTPattern.DANGEROUS_COMBO,
+                        confidence=0.7,
+                        description=(
+                            f"宽字节注入风险（行 {pdo_init_line}）："
+                            f"PDO 连接 charset 为 {pdo_charset}，但未禁用模拟预处理。"
+                            f"若数据库实际字符集为 GBK，prepare/execute 内部走 "
+                            f"mysql_real_escape_string 转义，可能被宽字节绕过"
+                            + extra_note
+                        ),
+                        related_vuln_types=["sql_injection"],
+                        evidence=lines[pdo_init_line - 1].strip() if pdo_init_line > 0 else "",
+                        is_safe=False,
+                    ))
+                else:
+                    pdo_init_file = self._find_pdo_init_file()
+                    if pdo_init_file:
+                        pdo_charset = self._project_pdo_charset or "unknown"
+                        # 找到 PDO 初始化文件中的实际行号和代码
+                        init_line = 1
+                        init_code = ""
+                        try:
+                            init_src = self._source_map.get(pdo_init_file, "")
+                            for li, ll in enumerate(init_src.split("\n"), 1):
+                                if re.search(r'new\s+PDO\s*\(', ll):
+                                    init_line = li
+                                    init_code = ll.strip()
+                                    break
+                        except Exception:
+                            pass
+                        findings.append(ASTFinding(
+                            file_path=pdo_init_file,
+                            line_number=init_line,
+                            pattern=ASTPattern.DANGEROUS_COMBO,
+                            confidence=0.65,
+                            description=(
+                                f"跨文件宽字节注入风险：PDO 连接 charset 为 "
+                                f"{pdo_charset}，但未禁用模拟预处理（ATTR_EMULATE_PREPARES=false）。"
+                                f"其他文件（如 {file_path}）使用 prepare/execute 时，"
+                                f"若数据库实际字符集为 GBK，参数化查询可能被宽字节绕过"
+                                + extra_note
+                            ),
+                            related_vuln_types=["sql_injection"],
+                            evidence=init_code,
+                            is_safe=False,
+                        ))
 
         return findings

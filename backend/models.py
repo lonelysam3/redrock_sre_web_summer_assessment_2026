@@ -32,6 +32,7 @@ class Project(db.Model):
     repo_path = db.Column(db.String(500), nullable=False)                  # 源码在磁盘上的绝对路径
     source_type = db.Column(db.String(20), default="local")                 # 来源: local(本地路径) / upload(压缩包上传)
     original_filename = db.Column(db.String(500), nullable=True)           # 上传的原始文件名（仅 upload 类型）
+    php_version = db.Column(db.String(20), nullable=True)                  # PHP 版本（仅 php 项目），如 5.0/5.3/7.4/8.0
     created_at = db.Column(db.DateTime, default=datetime.utcnow)           # 创建时间
 
     # 反向关系：通过 project.scans 获取所有关联的扫描任务
@@ -85,6 +86,8 @@ class Vulnerability(db.Model):
     scan_task_id = db.Column(db.Integer, db.ForeignKey("scan_tasks.id", ondelete="CASCADE"), nullable=False)  # 所属扫描任务
     file_path = db.Column(db.String(500), nullable=False)                  # 漏洞所在文件路径
     line_number = db.Column(db.Integer, nullable=False)                    # 漏洞所在行号
+    source_file = db.Column(db.String(500), nullable=True)                 # 跨文件漏洞的 source 文件路径
+    source_line = db.Column(db.Integer, nullable=True)                     # 跨文件漏洞的 source 行号
     vuln_type = db.Column(db.String(50), nullable=False)                   # 漏洞类型: sql_injection/command_execution/ssrf/path_traversal/arbitrary_file_read
     severity = db.Column(db.String(20), nullable=False)                    # 严重程度: critical/high/medium/low
     language = db.Column(db.String(20), nullable=False)                    # 编程语言: python/c/cpp

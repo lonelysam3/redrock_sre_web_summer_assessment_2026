@@ -33,12 +33,23 @@
                     <span id="file-name" class="file-name">未选择文件</span>
                 </div>
                 <!-- 编程语言（必选） -->
-                <select name="language" required>
+                <select name="language" id="upload-language" required onchange="togglePhpVersion()">
                     <option value="">选择语言</option>
                     <option value="python">Python</option>
                     <option value="c">C</option>
                     <option value="cpp">C++</option>
                     <option value="php">PHP</option>
+                </select>
+                <!-- PHP 版本选择（仅 PHP 项目显示） -->
+                <select name="php_version" id="upload-php-version" style="display:none;">
+                    <option value="">自动检测</option>
+                    <option value="5.0">PHP 5.0~5.3.5</option>
+                    <option value="5.3">PHP 5.3.6~5.4</option>
+                    <option value="5.5">PHP 5.5~5.6</option>
+                    <option value="7.0">PHP 7.0~7.1</option>
+                    <option value="7.2">PHP 7.2~7.3</option>
+                    <option value="7.4">PHP 7.4</option>
+                    <option value="8.0">PHP 8.0+</option>
                 </select>
                 <button type="submit" class="btn btn-primary">上传并扫描</button>
             </form>
@@ -116,6 +127,13 @@
             }
         });
 
+        /** 切换 PHP 版本选择器可见性 */
+        function togglePhpVersion() {
+            const lang = document.getElementById('upload-language');
+            const pv = document.getElementById('upload-php-version');
+            pv.style.display = (lang.value === 'php') ? '' : 'none';
+        }
+
         uploadForm.addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -151,17 +169,18 @@
 
                 if (resp.ok) {
                     uploadStatus.className = 'upload-status success';
+                    const rescanBtn = `<button class="btn btn-sm btn-primary" onclick="rescanProject(${result.id}, '${result.name}')" style="margin-left:8px;">🔄 重新扫描</button>`;
                     if (result.scan_id) {
-                        uploadStatus.innerHTML = `✅ 上传成功！项目 "${result.name}" 已创建，扫描中... <a href="/project/${result.id}">查看项目</a>`;
-                        // 3 秒后刷新页面
+                        uploadStatus.innerHTML = `✅ 上传成功！项目 "${result.name}" 已创建，扫描中... <a href="/project/${result.id}">查看项目</a> <a href="/scan/${result.scan_id}">查看扫描</a> ${rescanBtn}`;
                         setTimeout(() => location.reload(), 3000);
                     } else {
-                        uploadStatus.innerHTML = `✅ 项目 "${result.name}" 已创建 <a href="/project/${result.id}">查看项目</a>`;
+                        uploadStatus.innerHTML = `✅ 项目 "${result.name}" 已创建 <a href="/project/${result.id}">查看项目</a> ${rescanBtn}`;
                         setTimeout(() => location.reload(), 2000);
                     }
                 } else {
                     uploadStatus.className = 'upload-status error';
                     uploadStatus.textContent = '❌ ' + (result.error || '上传失败');
+                    alert(result.error || '上传失败，请重试');
                 }
             } catch (err) {
                 uploadStatus.className = 'upload-status error';
@@ -180,6 +199,19 @@
             if (!confirm('确定删除此项目？关联的扫描数据也会被删除。')) return;
             await fetch(`/api/projects/${id}`, { method: 'DELETE' });
             location.reload();
+        }
+
+        /**
+         * 重新扫描项目（主页面用）
+         */
+        async function rescanProject(id, name) {
+            const resp = await fetch(`/project/${id}/new-scan`, { method: 'POST' });
+            if (resp.ok) {
+                const data = await resp.json();
+                window.location.href = `/scan/${data.scan_id}`;
+            } else {
+                alert(`项目 "${name}" 重新扫描失败`);
+            }
         }
     </script>
 </body>

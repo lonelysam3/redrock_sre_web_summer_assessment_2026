@@ -81,6 +81,13 @@
         <div class="card">
             <div>
                 <strong>项目：</strong> {{ project.name }} ({{ project.language }})
+                {% if project.language == 'php' %}
+                {% if project.php_version and project.php_version.startswith('auto(') %}
+                <span class="badge" style="background:#45475a;color:#a6e3a1;margin-left:4px;">🤖 PHP {{ project.php_version[5:-1] }} (自动检测)</span>
+                {% elif project.php_version %}
+                <span class="badge" style="background:#45475a;margin-left:4px;">PHP {{ project.php_version }}</span>
+                {% endif %}
+                {% endif %}
                 &nbsp;|&nbsp;
                 <strong>状态：</strong>
                 {% if scan.status == 'done' %}
@@ -155,7 +162,7 @@
                 <p style="margin-top: 12px;">
                     <a href="/project/{{ project.id }}" class="btn btn-sm">返回项目页</a>
                     &nbsp;
-                    <button class="btn btn-sm btn-primary" onclick="retryScan()">重新扫描</button>
+                    <button class="btn btn-sm btn-primary" onclick="retryScan(event)">重新扫描</button>
                 </p>
             </div>
         </div>
@@ -296,10 +303,13 @@
             <div class="safe-note">
                 <p>💡 <strong>提示：</strong>未检测到漏洞不代表绝对安全。</p>
                 <ul>
-                    <li>三级流水线分析覆盖了常见的 Source-Sink 模式和危险函数调用</li>
+                    <li>四级流水线分析覆盖了常见的 Source-Sink 模式和危险函数调用</li>
                     <li>建议结合人工代码审查和渗透测试进行更全面的安全评估</li>
                     <li>可使用 AI 设置页面配置大模型进行深度代码逻辑分析</li>
                 </ul>
+                <p style="margin-top: 16px;">
+                    <button class="btn btn-primary" onclick="retryScan(event)">🔄 重新扫描</button>
+                </p>
             </div>
         </div>
 
@@ -327,6 +337,7 @@
         <!-- 操作按钮行 -->
         <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;">
             <button class="btn btn-primary" id="analyze-all-btn" onclick="analyzeAll()">🤖 一键 AI 分析</button>
+            <button class="btn" onclick="retryScan(event)">🔄 重新扫描</button>
             <a href="/settings" class="btn">⚙ AI 设置</a>
             <div id="analyze-progress-bar" style="display:none;flex:1;margin-left:8px;">
                 <div style="background:var(--surface);border-radius:6px;height:8px;overflow:hidden;">
@@ -358,7 +369,7 @@
                 <option value="low">Low</option>
             </select>
             <input type="text" id="filter-file" placeholder="搜索文件名..." oninput="applyFilters()">
-            <button class="btn btn-sm" onclick="sortByAI()" title="按 AI 分析结果排序：确认漏洞排最前">🤖 分类排序</button>
+            <button class="btn btn-sm" id="sort-by-ai-btn" title="按 AI 分析结果排序：确认漏洞排最前">🤖 分类排序</button>
         </div>
 
         <!-- ========== 漏洞列表 ========== -->
@@ -393,6 +404,9 @@
                     <div class="vuln-meta">
                         <!-- 文件路径 : 行号 -->
                         <span>{{ v.file_path }} : {{ v.line_number }}</span>
+                        {% if v.source_file and v.source_file != v.file_path %}
+                        <span style="font-size:0.8em;color:#f9e2af;">⟶ Source: {{ v.source_file }}:{{ v.source_line }}</span>
+                        {% endif %}
                         <!-- AI 分析按钮（已分析则禁用） -->
                         <button class="btn btn-sm" onclick="analyzeVuln({{ v.id }})" {% if v.ai_is_vulnerable %}disabled{% endif %}>
                             🤖 AI 分析
@@ -409,13 +423,17 @@
                 </div>
 
                 <!-- ===== 引擎输出：Source 代码 + 数据流 + Sink 代码 ===== -->
-                {% if v.source_code or v.sink_code %}
+                {% if v.source_code or v.sink_code or v.data_flow %}
                 <div class="vuln-code">
                     {% if v.source_code %}<span class="marker">// SOURCE（用户输入）: {{ v.source_func }}</span>
 {{ v.source_code }}{% endif %}
                     {% if v.data_flow %}<span class="marker">// DATA FLOW（数据流）: {{ v.data_flow }}</span>{% endif %}
                     {% if v.sink_code %}<span class="marker">// SINK（危险函数）: {{ v.sink_func }}</span>
 {{ v.sink_code }}{% endif %}
+                </div>
+                {% elif v.description %}
+                <div class="vuln-code" style="color:#a6adc8;">
+                    {{ v.description }}
                 </div>
                 {% endif %}
 
@@ -560,28 +578,41 @@
          * AI 分类排序：确认漏洞 → 不确定 → 误报 → 未分析
          */
         function sortByAI() {
-            const list = document.getElementById('vuln-list');
-            const items = Array.from(list.querySelectorAll('.vuln-item'));
-            const order = { 'true': 0, 'uncertain': 1, 'false': 2, 'unanalyzed': 3 };
-            items.sort((a, b) => (order[a.dataset.ai] ?? 4) - (order[b.dataset.ai] ?? 4));
-            items.forEach(item => list.appendChild(item));
+            var list = document.getElementById('vuln-list');
+            if (!list) return;
+            var items = list.getElementsByClassName('vuln-item');
+            if (!items || !items.length) return;
+            var arr = [];
+            for (var i = 0; i < items.length; i++) arr.push(items[i]);
+            var order = { 'true': 0, 'uncertain': 1, 'false': 2, 'unanalyzed': 3 };
+            arr.sort(function(a, b) {
+                var va = a.getAttribute('data-ai') || 'unanalyzed';
+                var vb = b.getAttribute('data-ai') || 'unanalyzed';
+                return (order[va] || 4) - (order[vb] || 4);
+            });
+            for (var j = 0; j < arr.length; j++) list.appendChild(arr[j]);
         }
 
         /**
          * 前端筛选器
          * ==========
+         */
         function applyFilters() {
-            const type = document.getElementById('filter-type').value;
-            const severity = document.getElementById('filter-severity').value;
-            const file = document.getElementById('filter-file').value.toLowerCase();
-
-            document.querySelectorAll('.vuln-item').forEach(item => {
-                // 检查是否匹配所有筛选条件
-                const matchType = !type || item.dataset.type === type;
-                const matchSeverity = !severity || item.dataset.severity === severity;
-                const matchFile = !file || item.dataset.file.toLowerCase().includes(file);
-                item.style.display = (matchType && matchSeverity && matchFile) ? '' : 'none';
-            });
+            var type = document.getElementById('filter-type');
+            var severity = document.getElementById('filter-severity');
+            var fileInput = document.getElementById('filter-file');
+            if (!type || !severity) return;
+            var typeVal = type.value;
+            var sevVal = severity.value;
+            var fileVal = (fileInput ? fileInput.value : '').toLowerCase();
+            var items = document.querySelectorAll('.vuln-item');
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                var matchType = !typeVal || item.getAttribute('data-type') === typeVal;
+                var matchSev = !sevVal || item.getAttribute('data-severity') === sevVal;
+                var matchFile = !fileVal || (item.getAttribute('data-file') || '').toLowerCase().indexOf(fileVal) !== -1;
+                item.style.display = (matchType && matchSev && matchFile) ? '' : 'none';
+            }
         }
 
         // 扫描中时每 5 秒自动刷新页面
@@ -660,8 +691,8 @@
             }
             setTimeout(() => location.reload(), 1000);
         }
-        async function retryScan() {
-            const btn = event.target;
+        async function retryScan(evt) {
+            var btn = (evt && evt.target) || event.target;
             btn.disabled = true;
             btn.textContent = '启动中...';
             const resp = await fetch('/project/{{ project.id }}/new-scan', { method: 'POST' });
@@ -674,6 +705,12 @@
                 btn.textContent = '重新扫描';
             }
         }
+
+        // 注册事件监听
+        (function() {
+            var btn = document.getElementById('sort-by-ai-btn');
+            if (btn) btn.addEventListener('click', sortByAI);
+        })();
     </script>
 </body>
 </html>

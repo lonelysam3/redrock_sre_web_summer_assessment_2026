@@ -40,31 +40,34 @@ def scan_project(project_path: str, language: str) -> list[dict]:
     return result.final_vulns
 
 
-def scan_with_pipeline(project_path: str, language: str) -> PipelineResult:
+def scan_with_pipeline(project_path: str, language: str, php_version: str | None = None) -> PipelineResult:
     """
-    使用三级流水线扫描项目。
+    使用四级流水线扫描项目。
 
-    流水线: Stage 1 污点追踪 → Stage 2 数据流 → Stage 3 AST
+    流水线: Stage 1 污点追踪 → Stage 2 数据流 → Stage 3 AST → Stage 4 调用图
+
+    PHP 项目若未指定 php_version，会自动检测源码所需的 PHP 最低版本。
 
     参数:
         project_path: 项目源码的磁盘路径
         language:     编程语言 (python/c/cpp/php)
+        php_version:  PHP 版本，None 时自动检测
 
     返回:
-        PipelineResult: 包含三级分析全部结果
+        PipelineResult: 包含四级分析全部结果 + resolved_php_version
     """
     pipeline = AnalysisPipeline()
-    return pipeline.run(project_path, language)
+    return pipeline.run(project_path, language, php_version=php_version)
 
 
 def scan_with_verification(
-    project_path: str, language: str, ai_client=None
+    project_path: str, language: str, ai_client=None, php_version: str | None = None
 ) -> tuple[list[dict], list[VerificationReport]]:
     """
     完整扫描 + AI 自动验证。
 
     流程:
-      1. 三级流水线扫描
+      1. 四级流水线扫描
       2. AI Payload 构建
       3. AI Payload 验证
       4. 自动标记 confirmed / potential
@@ -73,13 +76,14 @@ def scan_with_verification(
         project_path: 项目源码目录
         language:     编程语言
         ai_client:    AI 客户端（可选，用于 Payload 构建和验证）
+        php_version:  PHP 版本（仅 php 项目生效）
 
     返回:
         (final_vulns, verification_reports): 最终漏洞列表和验证报告
     """
-    # ---- 1. 三级流水线 ----
+    # ---- 1. 四级流水线 ----
     pipeline = AnalysisPipeline()
-    result = pipeline.run(project_path, language)
+    result = pipeline.run(project_path, language, php_version=php_version)
     vulns = result.final_vulns
 
     if not vulns:

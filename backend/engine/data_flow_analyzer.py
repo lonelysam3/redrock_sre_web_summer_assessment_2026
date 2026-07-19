@@ -209,20 +209,35 @@ class DataFlowAnalyzer:
                     continue  # 同文件已检测过
                 # 跨文件：该文件只有 sink，source 在别处
                 src_file = ""
+                src_line_num = 0
+                src_code_line = ""
                 for fp, src in source_code_map.items():
-                    if re.search(src_pat, src, re.IGNORECASE):
+                    m = re.search(src_pat, src, re.IGNORECASE)
+                    if m:
                         src_file = fp
+                        # 找到 source 所在的精确行
+                        src_lines = src.split("\n")
+                        for si, sl in enumerate(src_lines):
+                            if re.search(src_pat, sl, re.IGNORECASE):
+                                src_line_num = si + 1
+                                src_code_line = sl.strip()
+                                break
                         break
+                if not src_file:
+                    continue
                 for i, line in enumerate(lines):
                     if re.search(sink_pat, line, re.IGNORECASE):
-                        # 只报告一次每个文件的每种类型
                         key = (vuln_type, file_path)
                         if key not in {(v.get("vuln_type"), v.get("file_path")) for v in vulns if v.get("pipeline_stage") == "data_flow"}:
                             vulns.append({
                                 "file_path": file_path, "line_number": i + 1, "sink_line": i + 1,
                                 "vuln_type": vuln_type, "severity": severity, "language": language,
-                                "source_code": f"Source: {src_file}", "sink_code": line.strip(),
-                                "data_flow": f"跨文件: {desc}", "pipeline_stage": "data_flow",
+                                "source_code": src_code_line,
+                                "sink_code": line.strip(),
+                                "data_flow": f"跨文件 [{src_file}:{src_line_num} → {file_path}] {desc}",
+                                "source_file": src_file,
+                                "source_line": src_line_num,
+                                "pipeline_stage": "data_flow",
                             })
                         break
 
@@ -331,12 +346,23 @@ class DataFlowAnalyzer:
                 has_source = re.search(src_pat, block_text, re.IGNORECASE)
                 has_sink = re.search(sink_pat, block_text, re.IGNORECASE)
                 if has_source and has_sink:
+                    # 找到 source 所在行
+                    source_line = block_start + 1
+                    source_code_snippet = ""
+                    for i in range(block_start, block_end):
+                        if re.search(src_pat, lines[i], re.IGNORECASE):
+                            source_line = i + 1
+                            source_code_snippet = lines[i].strip()
+                            break
                     # 找到 sink 所在行
                     sink_line = block_start + 1
+                    sink_code_snippet = ""
                     for i in range(block_start, block_end):
                         if re.search(sink_pat, lines[i], re.IGNORECASE):
                             sink_line = i + 1
+                            sink_code_snippet = lines[i].strip()
                             break
+
                     vulns.append({
                         "file_path": file_path,
                         "line_number": sink_line,
@@ -344,9 +370,10 @@ class DataFlowAnalyzer:
                         "vuln_type": vuln_type,
                         "severity": severity,
                         "language": language,
-                        "source_code": "",
-                        "sink_code": lines[sink_line - 1].strip() if sink_line - 1 < len(lines) else "",
+                        "source_code": source_code_snippet,
+                        "sink_code": sink_code_snippet,
                         "data_flow": desc,
+                        "source_line": source_line,
                         "pipeline_stage": "data_flow",
                     })
 
