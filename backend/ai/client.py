@@ -118,6 +118,133 @@ class AIClient:
         return self._chat(prompt)
 
     # ================================================================
+    # 带 MCP 工具调用的深度分析
+    # ================================================================
+
+    def analyze_single_with_tools(
+        self, vuln: dict, context_code: str = "",
+        php_version: str = "", project_path: str = "",
+        max_tool_rounds: int = 3,
+    ) -> dict | None:
+        """
+        使用 MCP 工具进行交互式深度分析。
+
+        AI 可以调用 search_dangerous_calls、search_user_inputs、
+        trace_variable_flow 等工具自主探索源码，发现更多漏洞上下文。
+
+        流程:
+          1. 发送分析 prompt + 工具说明
+          2. AI 回复中可能包含 tool_calls
+          3. 执行工具调用，将结果反馈给 AI
+          4. 循环直到 AI 不再请求工具或达到最大轮数
+          5. 返回最终分析 JSON
+
+        参数:
+            vuln:            漏洞信息字典
+            context_code:    初始上下文代码
+            php_version:     PHP 版本
+            project_path:    项目路径（工具需要）
+            max_tool_rounds: 最大工具调用轮数
+
+        返回:
+            dict: AI 深度分析结果
+        """
+        from engine.mcp_tools import (
+            MCPToolExecutor, build_tool_system_prompt, parse_tool_calls
+        )
+
+        tool_executor = MCPToolExecutor(project_path) if project_path else None
+
+        vuln_type = vuln.get("vuln_type", "")
+
+        # 构建版本上下文
+        php_ctx = ""
+        if php_version:
+            from engine.rule_engine import RuleEngine
+            eng = RuleEngine(php_version)
+            ctx = eng.get_wide_byte_context()
+            php_ctx = (
+                f"- **目标 PHP 版本**：{php_version}\n"
+                f"- **DSN charset 可靠性**：{'可信' if ctx['dsn_charset_trusted'] else '不可信'}\n"
+            )
+
+        # 工具说明
+        tool_prompt = build_tool_system_prompt() if tool_executor else ""
+
+        # 构建初始 prompt
+        initial_prompt = ANALYSIS_PROMPT_TEMPLATE.format(
+            vuln_type_label=VULN_TYPE_LABELS.get(vuln_type, vuln_type),
+            vuln_type=vuln_type,
+            file_path=vuln.get("file_path", ""),
+            language=vuln.get("language", ""),
+            severity=vuln.get("severity", ""),
+            description=VULN_TYPE_DESCRIPTIONS.get(vuln_type, ""),
+            data_flow=vuln.get("data_flow", ""),
+            source_code=vuln.get("source_code", ""),
+            sink_code=vuln.get("sink_code", ""),
+            pipeline_stage=vuln.get("pipeline_stage", ""),
+            php_version_context=php_ctx,
+            context_code=context_code,
+        )
+
+        # 工具调用循环
+        conversation = [initial_prompt]
+        final_result = None
+
+        for round_num in range(max_tool_rounds):
+            # 构建当前轮的消息（包含历史）
+            system_with_tools = SYSTEM_PROMPT
+            if tool_executor:
+                system_with_tools += "\n\n" + tool_prompt
+
+            if round_num == 0:
+                user_msg = initial_prompt
+            else:
+                user_msg = (
+                    f"上一轮工具调用结果已返回。请继续分析，如果需要更多信息可以再次调用工具。"
+                    f"如果分析已完成，请输出最终的 JSON 分析结果。"
+                )
+
+            response = self._chat_raw(user_msg, system_prompt=system_with_tools)
+            if not response:
+                break
+
+            conversation.append(response)
+
+            # 尝试解析工具调用
+            if tool_executor:
+                tool_calls = parse_tool_calls(response)
+                if tool_calls:
+                    tool_results = []
+                    for tc in tool_calls:
+                        result = tool_executor.execute(
+                            tc["name"], tc.get("arguments", {})
+                        )
+                        tool_results.append(
+                            f"[Tool: {tc['name']}]\n{result[:2000]}\n[/Tool]"
+                        )
+
+                    # 将工具结果附加到对话
+                    if tool_results:
+                        result_msg = "工具调用结果：\n\n" + "\n\n".join(tool_results)
+                        # 将结果追加到对话历史
+                        if round_num < max_tool_rounds - 1:
+                            # 不是最后一轮，把结果作为下一轮的上下文
+                            initial_prompt += "\n\n---\n## 工具调用结果（第 {} 轮）\n".format(round_num + 1) + result_msg
+                        continue
+
+            # 无工具调用，尝试解析最终 JSON
+            final_result = self._parse_json(response)
+            if final_result:
+                break
+
+        # 最后一轮后尝试解析
+        if not final_result and conversation:
+            final_result = self._parse_json(conversation[-1])
+
+        return final_result
+
+    # ================================================================
     # 批量漏洞分析
     # ================================================================
 

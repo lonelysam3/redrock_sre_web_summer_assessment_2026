@@ -781,7 +781,7 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
                 )
                 ctx = f"=== SOURCE 文件: {source_file} ===\n{src_ctx}\n\n=== SINK 文件: {sink_file} ===\n{ctx}"
 
-            result = client.analyze_single({
+            result = client.analyze_single_with_tools({
                 "file_path": v.file_path,
                 "vuln_type": v.vuln_type,
                 "severity": v.severity,
@@ -790,7 +790,8 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
                 "source_code": actual_source,
                 "sink_code": actual_sink,
                 "pipeline_stage": v.pipeline_stage or "",
-            }, ctx, php_version=php_version)
+            }, ctx, php_version=php_version,
+               project_path=project_path or os.path.dirname(v.file_path) if v.file_path else "")
 
             if result:
                 v.ai_analysis = _json.dumps(result, ensure_ascii=False)
