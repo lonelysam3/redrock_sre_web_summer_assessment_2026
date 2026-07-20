@@ -825,19 +825,24 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
                project_path=project_path or os.path.dirname(v.file_path) if v.file_path else "")
 
             if result:
-                v.ai_analysis = _json.dumps(result, ensure_ascii=False)
-                v.ai_is_vulnerable = result.get("is_vulnerable", "uncertain")
-                v.ai_severity = result.get("severity", v.severity)
-                v.ai_cwe_id = result.get("cwe_id", "")
-                v.ai_owasp_category = result.get("owasp_category", "")
-                v.ai_root_cause = _json.dumps(result.get("root_cause", {}), ensure_ascii=False)
-                v.ai_attack_vector = _json.dumps(result.get("attack_analysis", {}), ensure_ascii=False)
-                v.ai_fix_suggestion = _json.dumps(result.get("fix_recommendation", {}), ensure_ascii=False)
-                fix = result.get("fix_recommendation", {})
-                if isinstance(fix, dict):
-                    primary = fix.get("primary", {})
-                    v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
-                analyzed += 1
+                # AI 可能返回 dict 或 list；如果是 list，取首项 dict
+                r = result
+                if isinstance(r, list):
+                    r = r[0] if r and isinstance(r[0], dict) else None
+                if isinstance(r, dict):
+                    v.ai_analysis = _json.dumps(r, ensure_ascii=False)
+                    v.ai_is_vulnerable = r.get("is_vulnerable", "uncertain")
+                    v.ai_severity = r.get("severity", v.severity)
+                    v.ai_cwe_id = r.get("cwe_id", "")
+                    v.ai_owasp_category = r.get("owasp_category", "")
+                    v.ai_root_cause = _json.dumps(r.get("root_cause", {}), ensure_ascii=False)
+                    v.ai_attack_vector = _json.dumps(r.get("attack_analysis", {}), ensure_ascii=False)
+                    v.ai_fix_suggestion = _json.dumps(r.get("fix_recommendation", {}), ensure_ascii=False)
+                    fix = r.get("fix_recommendation", {})
+                    if isinstance(fix, dict):
+                        primary = fix.get("primary", {})
+                        v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
+                    analyzed += 1
 
             db.session.commit()
         except Exception as e:

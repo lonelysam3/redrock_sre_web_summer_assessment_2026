@@ -2,6 +2,107 @@
 
 四级流水线静态分析 + AI 深度验证的源码安全审计引擎。基于污点追踪、数据流分析、AST 模式匹配、调用图分析四级独立流水线，支持 Python / C / C++ / PHP 四种语言，覆盖 SQL 注入、命令执行、XSS、SSRF 等 8 种漏洞类型。内置 PHP 版本感知规则引擎，可根据目标 PHP 版本动态调整检测策略。
 
+## 快速开始
+
+### 环境要求
+
+- Python 3.10+
+- Git
+
+### 安装
+
+```bash
+# 克隆仓库
+git clone git@github.com:lonelysam3/redrock_sre_web_summer_assessment_2026.git
+cd redrock_sre_web_summer_assessment_2026
+
+# 创建虚拟环境
+python -m venv venv
+
+# 激活虚拟环境
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
+```
+
+### 配置
+
+在 `backend/` 目录下创建 `.env` 文件（可选，也可以在 Web 设置页面配置）：
+
+```env
+# Flask 密钥（生产环境请修改）
+SECRET_KEY=your-secret-key-here
+
+# AI API 配置（兼容 OpenAI 接口，支持 DeepSeek 等）
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+### 启动
+
+```bash
+cd backend
+python app.py
+```
+
+服务启动后访问 http://localhost:5000 即可使用。
+
+### 使用流程
+
+1. **上传项目** — 首页拖拽或选择项目源码压缩包（.zip / .tar.gz），选择语言类型（PHP 项目可指定目标版本）
+2. **开始扫描** — 点击「开始扫描」触发四级流水线分析，后台异步执行，页面自动刷新进度
+3. **查看报告** — 扫描完成后进入报告页，漏洞按严重程度排列，点击展开详情（Source → Sink 数据流路径、所在代码行）
+4. **AI 深度分析** — 点击「AI 分析」按钮逐条分析漏洞，AI 会自主调用 MCP 工具搜索源码上下文，输出 CWE 编号、OWASP 分类、攻击向量和修复建议
+5. **AI 设置** — 在设置页面配置 API Key、Base URL 和模型，配置即时生效无需重启
+
+### 项目结构
+
+```
+backend/
+├── app.py                    # Flask 入口 + 后台扫描线程 + DB 迁移
+├── models.py                 # SQLAlchemy ORM
+├── config.py                 # 配置文件
+├── requirements.txt          # Python 依赖
+├── engine/                   # 四级扫描引擎
+│   ├── pipeline.py           # 流水线编排 + 去重
+│   ├── rule_engine.py        # PHP 版本感知规则引擎
+│   ├── taint_tracker.py      # 污点图数据结构 + BFS 路径搜索
+│   ├── php_scanner.py        # PHP tree-sitter 扫描器
+│   ├── python_scanner.py     # Python AST 扫描器
+│   ├── c_scanner.py          # C/C++ tree-sitter 扫描器
+│   ├── data_flow_analyzer.py # 数据流独立扫描 + 跨文件检测
+│   ├── ast_analyzer.py       # AST 模式分析 + 宽字节/PDO检测
+│   ├── call_graph_analyzer.py# 调用图跨函数分析
+│   ├── mcp_tools.py          # MCP 工具集（AI 自主搜索源码）
+│   ├── sources_php.py        # PHP Source 点定义
+│   ├── sinks_php.py          # PHP Sink 点定义
+│   ├── payload_builder.py    # AI Payload 构建
+│   └── ai_verifier.py         # AI Payload 验证
+├── ai/                       # AI 分析模块
+│   ├── client.py             # AI 客户端
+│   ├── prompts.py            # Prompt 模板
+│   └── settings_bridge.py    # 配置适配
+├── api/                      # REST API
+│   ├── projects.py           # 项目管理（上传/删除）
+│   ├── scans.py              # 扫描任务
+│   └── vulns.py              # 漏洞查询/AI分析
+├── utils/                    # 工具模块
+│   ├── archive_handler.py    # 压缩包安全解压
+│   ├── code_extractor.py     # 代码上下文提取
+│   └── path_security.py      # 路径安全校验
+├── templates/                # Jinja2 页面
+│   ├── index.html            # 首页
+│   ├── project.html          # 项目详情
+│   ├── scan.html             # 扫描报告
+│   └── settings.html         # AI 设置
+└── static/                   # CSS
+```
+
 ## 技术架构
 
 ```
@@ -116,43 +217,3 @@ AI 收到漏洞后转入三轮工具调用循环：自主搜索 Source/Sink 点 
   - `scan_tasks`：扫描状态、文件计数、漏洞计数
   - `vulnerabilities`：漏洞详情 + AI 分析结果（CWE/OWASP/根因/攻击向量/修复方案）+ 跨文件 source 定位
   - `ai_settings`：单例配置表，API Key / Base URL / 模型
-
-## 项目结构
-
-```
-backend/
-├── app.py                    # Flask 入口 + 后台扫描线程 + DB 迁移
-├── models.py                 # SQLAlchemy ORM
-├── engine/                   # 四级扫描引擎
-│   ├── pipeline.py           # 流水线编排 + 去重 + 无Source过滤
-│   ├── rule_engine.py        # PHP 版本感知规则引擎 + 自动检测
-│   ├── taint_tracker.py      # 污点图数据结构 + BFS 路径搜索
-│   ├── php_scanner.py        # PHP tree-sitter 扫描器
-│   ├── python_scanner.py     # Python AST 扫描器
-│   ├── c_scanner.py          # C/C++ tree-sitter 扫描器
-│   ├── data_flow_analyzer.py # 数据流独立扫描 + 跨文件检测
-│   ├── ast_analyzer.py       # AST 模式分析 + 宽字节/PDO检测
-│   ├── call_graph_analyzer.py# 调用图跨函数分析
-│   ├── mcp_tools.py           # MCP 工具集（AI 自主搜索源码）
-│   ├── sources_php.py        # PHP Source 点定义
-│   ├── sinks_php.py          # PHP Sink 点定义
-│   ├── payload_builder.py    # AI Payload 构建
-│   └── ai_verifier.py        # AI Payload 验证
-├── ai/                       # AI 分析模块
-│   ├── client.py             # AI 客户端
-│   ├── prompts.py            # Prompt 模板
-│   └── settings_bridge.py    # 配置适配
-├── api/                      # REST API
-│   ├── projects.py           # 项目管理（上传/删除）
-│   ├── scans.py              # 扫描任务
-│   └── vulns.py              # 漏洞查询/AI分析
-├── utils/                    # 工具模块
-│   ├── archive_handler.py    # 压缩包安全解压（zip-slip防护）
-│   ├── code_extractor.py     # 代码上下文提取
-│   └── path_security.py      # 路径安全校验
-├── templates/                # Jinja2 页面
-│   ├── index.html            # 首页（上传 + 项目列表）
-│   ├── project.html          # 项目详情
-│   ├── scan.html             # 扫描报告
-│   └── settings.html         # AI 设置
-└── static/                   # CSS

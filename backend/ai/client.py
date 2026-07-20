@@ -247,6 +247,9 @@ class AIClient:
         if tool_rounds_used == 0 and has_tools and not final_result:
             print(f"[MCP] AI 未调用任何工具且未返回有效 JSON，首轮回复前 200 字符: {last_response[:200] if last_response else 'None'}")
 
+        # 归一化：如果 AI 返回了数组，取第一个 dict 元素
+        if isinstance(final_result, list):
+            final_result = final_result[0] if final_result and isinstance(final_result[0], dict) else None
         return final_result
 
     # ================================================================
