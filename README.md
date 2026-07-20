@@ -12,8 +12,8 @@
 ### 安装
 
 ```bash
-# 克隆仓库
-git clone git@github.com:lonelysam3/redrock_sre_web_summer_assessment_2026.git
+# 克隆仓库（本地开发）
+git clone https://github.com/lonelysam3/redrock_sre_web_summer_assessment_2026.git
 cd redrock_sre_web_summer_assessment_2026
 
 # 创建虚拟环境
@@ -57,8 +57,8 @@ python app.py
 无需安装 Python 环境，一键启动：
 
 ```bash
-# 克隆仓库
-git clone git@github.com:lonelysam3/redrock_sre_web_summer_assessment_2026.git
+# 克隆仓库（Docker 部署）
+git clone https://github.com/lonelysam3/redrock_sre_web_summer_assessment_2026.git
 cd redrock_sre_web_summer_assessment_2026
 
 # 配置 AI Key（二选一）
