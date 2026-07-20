@@ -562,6 +562,60 @@ def parse_tool_calls(response: str) -> list[dict]:
     if calls:
         return calls
 
+    # 策略 1b：```json [...] 数组格式（系统 prompt 推荐的格式）
+    # 用括号计数提取完整 JSON 数组，处理参数中含嵌套 {} 的情况
+    for m in re.finditer(r'```(?:json)?\s*\[', response):
+        start = m.end() - 1  # 指向 '['
+        depth = 0
+        end = start
+        for i in range(start, len(response)):
+            if response[i] == '[':
+                depth += 1
+            elif response[i] == ']':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end > start:
+            try:
+                data = json.loads(response[start:end])
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and "name" in item:
+                            calls.append(dict(name=item.get("name", ""),
+                                             arguments=item.get("arguments", {})))
+            except (json.JSONDecodeError, TypeError):
+                pass
+    if calls:
+        return calls
+
+    # 策略 1c：裸 JSON 数组 [{"name":...,"arguments":{...}}]（无 ``` 包裹）
+    # 括号计数提取
+    stripped = response.strip()
+    if stripped.startswith('['):
+        depth = 0
+        end = 0
+        for i, ch in enumerate(stripped):
+            if ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end > 0:
+            try:
+                data = json.loads(stripped[:end])
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and "name" in item:
+                            calls.append(dict(name=item.get("name", ""),
+                                             arguments=item.get("arguments", {})))
+            except (json.JSONDecodeError, TypeError):
+                pass
+    if calls:
+        return calls
+
     # 策略 2：裸 JSON 对象含 tool_calls（无 ``` 包裹）
     for m in re.finditer(r'\{\s*"tool_calls"\s*:\s*\[([\s\S]*?)\]\s*\}', response):
         try:
@@ -583,7 +637,7 @@ def parse_tool_calls(response: str) -> list[dict]:
         return calls
 
     # 策略 4：tool_name(file_path="...") 函数调用风格
-    for m in re.finditer(r'(search_\w+|read_file_\w+|trace_\w+|list_\w+)\s*\(\s*([^)]*)\s*\)', response):
+    for m in re.finditer(r'(search_\w+|read_file_\w+|trace_\w+|list_\w+|apply_\w+)\s*\(\s*([^)]*)\s*\)', response):
         name = m.group(1)
         args_str = m.group(2)
         args = {}
