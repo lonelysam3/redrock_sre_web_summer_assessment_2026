@@ -199,7 +199,7 @@ class AIClient:
             if has_tools:
                 system_with_tools += "\n\n" + tool_prompt
 
-            response = self._chat_raw(conversation_history, system_prompt=system_with_tools)
+            response = self._chat_raw(conversation_history, system_prompt=system_with_tools, max_tokens=8192)
             if not response:
                 print(f"[MCP] 第 {round_num+1} 轮 AI 无响应")
                 break
@@ -328,7 +328,7 @@ class AIClient:
     # 底层 HTTP 调用 + JSON 解析
     # ================================================================
 
-    def _chat(self, prompt: str) -> dict | list | None:
+    def _chat(self, prompt: str, max_tokens: int = 8192) -> dict | list | None:
         """底层 AI 调用，期望返回 JSON"""
         if not self.is_configured():
             print("[WARN] AI 未配置，请在设置页填入 API Key")
@@ -341,14 +341,15 @@ class AIClient:
                 user_message=prompt,
                 system_prompt=SYSTEM_PROMPT,
                 temperature=0.3,
-                max_tokens=4096,
+                max_tokens=max_tokens,
             )
             return self._parse_json(response)
         except Exception as e:
             print(f"[ERROR] AI API 调用失败: {e}")
             return None
 
-    def _chat_raw(self, prompt: str, system_prompt: str = "") -> str | None:
+    def _chat_raw(self, prompt: str, system_prompt: str = "",
+                  max_tokens: int = 8192) -> str | None:
         """底层 AI 调用，返回原始文本（不解析 JSON）"""
         if not self.is_configured():
             return None
@@ -359,7 +360,7 @@ class AIClient:
                 user_message=prompt,
                 system_prompt=system_prompt,
                 temperature=0.3,
-                max_tokens=4096,
+                max_tokens=max_tokens,
             )
         except Exception as e:
             print(f"[ERROR] AI API 调用失败: {e}")
@@ -430,17 +431,65 @@ class AIClient:
         """尝试修复 AI 返回的格式有问题的 JSON"""
         if not text:
             return None
+        repaired = text
+        # 0. 剥离 ``` 代码块标记（AI 常用外层包裹）
+        repaired = re.sub(r'^```\w*\s*', '', repaired.strip())
+        repaired = re.sub(r'\s*```\s*$', '', repaired)
         # 1. 移除尾部逗号（JSON 不允许 trailing comma）
-        repaired = re.sub(r',\s*}', '}', text)
+        repaired = re.sub(r',\s*}', '}', repaired)
         repaired = re.sub(r',\s*]', ']', repaired)
         # 2. 移除单行注释 // ... 到行尾
         repaired = re.sub(r'//[^\n]*', '', repaired)
         # 3. 移除多行注释 /* ... */
         repaired = re.sub(r'/\*[\s\S]*?\*/', '', repaired)
+        # 4. 修复截断的 JSON：自动闭合未匹配的括号
+        repaired = AIClient._close_truncated_json(repaired)
         try:
             return json.loads(repaired)
         except (json.JSONDecodeError, ValueError):
             return None
+
+    @staticmethod
+    def _close_truncated_json(text: str) -> str:
+        """
+        修复截断的 JSON：自动补全缺失的闭合括号。
+
+        当 AI 输出被 max_tokens 截断时，JSON 可能缺少闭合的 } 和 ]。
+        统计未闭合的括号并按栈序补全。
+
+        注意：跳过字符串内的括号（简单引号计数）。
+        """
+        stack = []
+        in_string = False
+        escape_next = False
+
+        for ch in text:
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == '\\':
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch in ('{', '['):
+                stack.append(ch)
+            elif ch == '}':
+                if stack and stack[-1] == '{':
+                    stack.pop()
+            elif ch == ']':
+                if stack and stack[-1] == '[':
+                    stack.pop()
+
+        # 按栈序逆序闭合
+        closing = ''
+        for bracket in reversed(stack):
+            closing += '}' if bracket == '{' else ']'
+
+        return text + closing
 
 
 # ============================================================================
