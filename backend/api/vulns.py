@@ -278,10 +278,9 @@ def analyze_all_vulns():
             failed += 1
             print(f"[AI] 分析漏洞 #{v.id} 失败: {e}")
 
-    # 自动触发 Payload 构建 + 验证
+    # 自动触发 MCP 工具驱动验证 + 修复
     verified = 0
     try:
-        from engine.payload_builder import PayloadBuilder
         from engine.ai_verifier import AIVerifier, VerificationResult
 
         analyzed_vulns = (Vulnerability.query
@@ -290,6 +289,14 @@ def analyze_all_vulns():
                          .all())
 
         if analyzed_vulns:
+            # 获取项目路径
+            proj_path = ""
+            try:
+                if analyzed_vulns[0].scan_task and analyzed_vulns[0].scan_task.project:
+                    proj_path = analyzed_vulns[0].scan_task.project.source_path or ""
+            except Exception:
+                pass
+
             source_code_map = {}
             for v in analyzed_vulns:
                 if v.file_path and v.file_path not in source_code_map:
@@ -310,14 +317,15 @@ def analyze_all_vulns():
                     "source_code": v.source_code or "",
                     "sink_code": v.sink_code or "",
                     "data_flow": v.data_flow or "",
+                    "pipeline_stage": v.pipeline_stage or "",
+                    "ai_analysis": v.ai_analysis or "",
                     "protection_level": "none",
                     "exploit_difficulty": "unknown",
                 })
 
-            builder = PayloadBuilder(client)
-            payload_sets = builder.build_payloads(vuln_dicts, source_code_map)
             verifier = AIVerifier(client)
-            reports = verifier.verify(vuln_dicts, payload_sets, source_code_map)
+            reports = verifier.verify(vuln_dicts, [], source_code_map,
+                                       project_path=proj_path, php_version=php_version)
 
             for report in reports:
                 if report.vuln_id < len(analyzed_vulns):
@@ -337,6 +345,8 @@ def analyze_all_vulns():
                     else:
                         av.status = "potential"
                         av.ai_payload_result = "uncertain"
+                    if report.fix_code:
+                        av.ai_fix_code = report.fix_code
             db.session.commit()
     except Exception as e:
         print(f"[VERIFY] 自动验证失败: {e}")
@@ -392,10 +402,9 @@ def _serialize(v: Vulnerability) -> dict:
 
 def _verify_single_vuln(v: Vulnerability):
     """
-    对单个已 AI 分析的漏洞进行 Payload 构建 + 验证。
+    对单个已 AI 分析的漏洞进行 MCP 工具驱动验证 + 修复。
     用于手动分析接口的自动验证。
     """
-    from engine.payload_builder import PayloadBuilder
     from engine.ai_verifier import AIVerifier, VerificationResult
     from ai.client import get_ai_client
 
@@ -411,6 +420,18 @@ def _verify_single_vuln(v: Vulnerability):
     except Exception:
         source_code_map[v.file_path] = v.source_code or ""
 
+    # 获取项目路径和 PHP 版本
+    project_path = ""
+    php_version = ""
+    try:
+        if v.scan_task and v.scan_task.project:
+            php_version = v.scan_task.project.php_version or ""
+            # 从文件路径推断项目根目录
+            import os as _os
+            project_path = _os.path.dirname(_os.path.dirname(v.file_path)) if v.file_path else ""
+    except Exception:
+        pass
+
     vuln_dict = {
         "file_path": v.file_path,
         "line_number": v.line_number,
@@ -420,14 +441,15 @@ def _verify_single_vuln(v: Vulnerability):
         "source_code": v.source_code or "",
         "sink_code": v.sink_code or "",
         "data_flow": v.data_flow or "",
+        "pipeline_stage": v.pipeline_stage or "",
+        "ai_analysis": v.ai_analysis or "",
         "protection_level": "none",
         "exploit_difficulty": "unknown",
     }
 
-    builder = PayloadBuilder(client)
-    payload_sets = builder.build_payloads([vuln_dict], source_code_map)
     verifier = AIVerifier(client)
-    reports = verifier.verify([vuln_dict], payload_sets, source_code_map)
+    reports = verifier.verify([vuln_dict], [], source_code_map,
+                               project_path=project_path, php_version=php_version)
 
     if reports:
         report = reports[0]
@@ -445,4 +467,6 @@ def _verify_single_vuln(v: Vulnerability):
         else:
             v.status = "potential"
             v.ai_payload_result = "uncertain"
+        if report.fix_code:
+            v.ai_fix_code = report.fix_code
         db.session.commit()

@@ -55,6 +55,8 @@ class VerificationReport:
     payload_effect: str = ""                # 预期 Payload 效果
     evidence: str = ""                      # AI 给出的验证证据
     recommendation: str = ""                # AI 的修复建议
+    fix_code: str = ""                      # AI 生成的修复代码
+    fix_description: str = ""               # 修复说明
 
 
 class AIVerifier:
@@ -132,76 +134,62 @@ class AIVerifier:
 
     def verify(
         self, vulns: list[dict], payload_sets: list,
-        source_code_map: dict[str, str]
+        source_code_map: dict[str, str],
+        project_path: str = "", php_version: str = "",
     ) -> list[VerificationReport]:
         """
-        对漏洞列表逐一验证。
+        使用 MCP 工具对漏洞列表逐一验证并生成修复代码。
 
         参数:
-            vulns:           三级流水线输出的最终漏洞列表
+            vulns:           漏洞列表
             payload_sets:    PayloadBuilder 生成的 Payload 集
             source_code_map: {file_path: source_code}
+            project_path:    项目路径（MCP 工具需要）
+            php_version:     PHP 版本
 
         返回:
-            list[VerificationReport]: 验证报告
+            list[VerificationReport]: 验证报告（含 fix_code）
         """
         reports = []
-        payload_map = {ps.target_file: ps for ps in payload_sets}
 
         for i, v in enumerate(vulns):
             file_path = v.get("file_path", "")
-            ps = payload_map.get(file_path)
 
             if self.ai_client and self.ai_client.is_configured():
-                report = self._ai_verify(v, ps, source_code_map, i)
+                report = self._ai_verify_with_tools(v, source_code_map, i,
+                                                     project_path, php_version)
             else:
-                # AI 不可用时，基于数据流分析做启发式判定
                 report = self._heuristic_verify(v, i)
 
             reports.append(report)
 
-        # 统计
         confirmed = sum(1 for r in reports if r.result == VerificationResult.CONFIRMED)
         potential = sum(1 for r in reports if r.result == VerificationResult.POTENTIAL)
-        print(f"[VERIFIER] AI 验证完成: {confirmed} confirmed, {potential} potential, "
+        print(f"[VERIFIER] MCP 验证完成: {confirmed} confirmed, {potential} potential, "
               f"{len(reports) - confirmed - potential} false_positive")
 
         return reports
 
-    def _ai_verify(self, vuln: dict, payload_set, source_code_map: dict[str, str],
-                   vuln_index: int) -> VerificationReport:
-        """使用 AI 进行深度验证"""
+    def _ai_verify_with_tools(self, vuln: dict, source_code_map: dict[str, str],
+                               vuln_index: int, project_path: str = "",
+                               php_version: str = "") -> VerificationReport:
+        """使用 MCP 工具进行深度验证 + 修复"""
         file_path = vuln.get("file_path", "")
 
-        # 拼装 Payload 文本
-        payloads_text = "无预定义 Payload"
-        if payload_set and payload_set.payloads:
-            payloads_text = "\n".join(
-                f"- `{p.value}` ({p.description}), 预期: {p.expected_result}"
-                for p in payload_set.payloads[:5]  # 最多 5 个
-            )
-
-        prompt = self.VERIFICATION_PROMPT.format(
-            vuln_type=vuln.get("vuln_type", ""),
-            file_path=file_path,
-            line_number=vuln.get("line_number", vuln.get("sink_line", 0)),
-            source_code=vuln.get("source_code", ""),
-            sink_code=vuln.get("sink_code", ""),
-            data_flow=vuln.get("data_flow", ""),
-            protection_level=vuln.get("protection_level", "none"),
-            exploit_difficulty=vuln.get("exploit_difficulty", "unknown"),
-            data_flow_notes=vuln.get("data_flow_notes", ""),
-            payloads_text=payloads_text,
-        )
+        # 构建上下文
+        ctx = ""
+        if file_path and file_path in source_code_map:
+            ctx = source_code_map[file_path][:6000]
 
         try:
-            response = self.ai_client._chat(prompt)
-            # 归一化：AI 可能返回 list 或 dict
-            r = response
-            if isinstance(r, list):
-                r = r[0] if r and isinstance(r[0], dict) else None
-            if isinstance(r, dict):
-                verdict_str = r.get("verdict", "potential")
+            result = self.ai_client.verify_and_fix_with_tools(
+                vuln,
+                context_code=ctx,
+                php_version=php_version,
+                project_path=project_path,
+            )
+            if result and isinstance(result, dict):
+                verdict_str = result.get("verdict", "potential")
                 verdict_map = {
                     "confirmed": VerificationResult.CONFIRMED,
                     "potential": VerificationResult.POTENTIAL,
@@ -215,16 +203,17 @@ class AIVerifier:
                     line_number=vuln.get("line_number", vuln.get("sink_line", 0)),
                     vuln_type=vuln.get("vuln_type", ""),
                     result=verdict,
-                    confidence=r.get("confidence", 0.5),
-                    verified_payload=r.get("best_payload", ""),
-                    payload_effect=r.get("payload_effect", ""),
-                    evidence=r.get("evidence", ""),
-                    recommendation=r.get("recommendation", ""),
+                    confidence=result.get("confidence", 0.5),
+                    verified_payload=result.get("exploit_payload", ""),
+                    payload_effect=result.get("payload_effect", ""),
+                    evidence=result.get("evidence", ""),
+                    recommendation=result.get("fix_description", ""),
+                    fix_code=result.get("fix_code", ""),
+                    fix_description=result.get("fix_description", ""),
                 )
         except Exception as e:
-            print(f"[VERIFIER] AI 验证异常: {e}")
+            print(f"[VERIFIER] MCP 验证异常: {e}")
 
-        # 回退：启发式判定
         return self._heuristic_verify(vuln, vuln_index)
 
     def _heuristic_verify(self, vuln: dict, vuln_index: int) -> VerificationReport:

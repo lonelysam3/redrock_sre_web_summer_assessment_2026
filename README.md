@@ -211,18 +211,19 @@ AI 收到漏洞后转入三轮工具调用循环：自主搜索 Source/Sink 点 
 
 - `engine/mcp_tools.py` — MCP 工具定义、执行器和 prompt 生成
 
-### AI Payload 自动验证
+### AI Payload 自动验证 + 修复
 
-AI 深度分析完成后，自动进入 Payload 构建 + 动态验证阶段：
+AI 深度分析完成后，自动进入 MCP 工具驱动的验证 + 修复阶段：
 
-1. **Payload 构建** — `engine/payload_builder.py` 为每个漏洞生成针对性攻击 Payload（SQL 注入 / 命令执行 / SSRF / XSS / 路径穿越等 7 种类型），先用静态模板库快速匹配，再调用 AI 生成精准 Payload
-2. **动态验证** — `engine/ai_verifier.py` 结合漏洞上下文、数据流路径和 Payload 集，由 AI 模拟攻击场景判断 Payload 是否可触发漏洞
-3. **状态标记**：
-   - `confirmed`（✅ AI 确认漏洞）— Payload 极大概率可利用
-   - `potential`（❓ AI 不确定）— 存在风险但无法确认（如不确定是否有 WAF）
-   - `false_positive`（🚫 误报）— 代码实际是安全的
+1. **MCP 工具探索** — AI 自主调用 `search_dangerous_calls` 定位所有危险函数、`search_user_inputs` 定位输入入口、`trace_variable_flow` 追踪变量传播、`search_project` 跨文件搜索安全控制
+2. **Payload 构建** — 确认漏洞后，结合源码上下文生成精准的攻击 Payload
+3. **自动修复** — 生成可直接使用的修复代码 + 修复说明
+4. **状态标记**：
+   - `confirmed`（✅ AI 确认漏洞）— MCP 工具证实数据流完整、无有效安全控制
+   - `potential`（❓ AI 不确定）— 存在风险但缺少关键证据
+   - `false_positive`（🚫 误报）— 代码有有效安全控制
 
-验证结果写入数据库的 `status`、`ai_payload`、`ai_payload_result`、`ai_payload_evidence` 字段，扫描报告页可直接查看每个漏洞的 Payload 和验证证据。
+验证结果写入 `status`、`ai_payload`、`ai_payload_result`、`ai_payload_evidence`、`ai_fix_code` 字段。
 
 ## 数据模型
 

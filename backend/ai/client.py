@@ -27,6 +27,97 @@ from ai.prompts import (
 )
 from ai.settings_bridge import build_ai_chat_core
 
+# ============================================================================
+# 验证 + 自动修复 Prompt
+# ============================================================================
+
+VERIFY_AND_FIX_SYSTEM_PROMPT = """你是一名资深渗透测试专家 + 安全修复工程师。
+
+## 你的任务
+
+1. **验证漏洞** — 使用工具深入探索源码，判断漏洞是否真实可利用
+2. **生成 Payload** — 如果确认漏洞，给出精准的攻击载荷
+3. **自动修复** — 给出可直接使用的修复代码
+
+## 工作流程
+
+1. 先调用 search_dangerous_calls 定位所有危险函数
+2. 调用 search_user_inputs 定位所有用户输入入口
+3. 调用 trace_variable_flow 追踪关键变量的传播路径
+4. 调用 read_file_region 读取关键代码上下文
+5. 调用 search_project 跨文件搜索相关配置（如 WAF、过滤器）
+6. 综合分析后给出最终判定 + Payload + 修复代码
+
+## 判定标准
+
+- **confirmed**: 数据流完整、无可行的安全控制、Payload 确定可触发
+- **potential**: 存在风险但缺少关键证据（如不确定 WAF 配置）
+- **false_positive**: 代码有有效安全控制（参数化查询/白名单/强类型校验）
+
+## 修复代码要求
+
+- 必须完整可用，可直接替换原代码
+- 使用最佳安全实践（参数化查询、输入校验、输出编码等）
+- 如果是 PHP，考虑目标版本的特性
+- 附上修复说明，解释为什么这样修复
+
+## 重要
+
+不要重复基础分析！如果漏洞已有 AI 分析结果（在上下文提供），直接基于它验证，
+不要再分析漏洞成因。专注于验证和修复。"""
+
+VERIFY_AND_FIX_TEMPLATE = """## 漏洞验证 + 修复任务
+
+### 基本信息
+- **类型**: {vuln_type_label}（{vuln_type}）
+- **文件**: {file_path}
+- **语言**: {language}
+- **初步严重程度**: {severity}
+- **发现阶段**: {pipeline_stage}
+{php_version_context}
+
+### 源码入口（Source）
+```
+{source_code}
+```
+
+### 危险函数（Sink）
+```
+{sink_code}
+```
+
+### 数据流路径
+```
+{data_flow}
+```
+
+### 已有 AI 分析结果
+{ai_analysis}
+
+### 额外代码上下文
+```
+{context_code}
+```
+
+### 漏洞类型说明
+{description}
+
+---
+
+请使用工具探索代码，验证漏洞是否真实，然后输出 JSON：
+
+```json
+{{
+    "verdict": "confirmed|potential|false_positive",
+    "confidence": 0.0-1.0,
+    "exploit_payload": "最有效的攻击 Payload",
+    "payload_effect": "Payload 的预期效果",
+    "evidence": "验证证据（3-5 句话，引用具体的行号和代码）",
+    "fix_code": "完整的修复代码（可直接替换）",
+    "fix_description": "修复说明（为什么这样修复，还有其他备选方案吗）"
+}}
+```
+"""
 
 class AIClient:
     """
@@ -248,6 +339,128 @@ class AIClient:
             print(f"[MCP] AI 未调用任何工具且未返回有效 JSON，首轮回复前 200 字符: {last_response[:200] if last_response else 'None'}")
 
         # 归一化：如果 AI 返回了数组，取第一个 dict 元素
+        if isinstance(final_result, list):
+            final_result = final_result[0] if final_result and isinstance(final_result[0], dict) else None
+        return final_result
+
+    # ================================================================
+    # MCP 工具驱动验证 + 自动修复
+    # ================================================================
+
+    def verify_and_fix_with_tools(
+        self, vuln: dict, context_code: str = "",
+        php_version: str = "", project_path: str = "",
+        max_tool_rounds: int = 4,
+    ) -> dict | None:
+        """
+        使用 MCP 工具自主验证漏洞可利用性并生成修复代码。
+
+        AI 会调用 search_dangerous_calls、trace_variable_flow、
+        read_file_region 等工具深入探索源码，确认漏洞是否真实，
+        并给出可用的修复代码。
+
+        返回:
+            {
+                "verdict": "confirmed|potential|false_positive",
+                "confidence": 0.0-1.0,
+                "exploit_payload": "...",
+                "payload_effect": "...",
+                "evidence": "验证证据",
+                "fix_code": "修复代码",
+                "fix_description": "修复说明"
+            }
+        """
+        from engine.mcp_tools import (
+            MCPToolExecutor, build_tool_system_prompt, parse_tool_calls
+        )
+
+        tool_executor = MCPToolExecutor(project_path) if project_path else None
+        tool_prompt = build_tool_system_prompt() if tool_executor else ""
+
+        vuln_type = vuln.get("vuln_type", "")
+
+        # 版本上下文
+        php_ctx = ""
+        if php_version:
+            from engine.rule_engine import RuleEngine
+            eng = RuleEngine(php_version)
+            ctx_obj = eng.get_wide_byte_context()
+            php_ctx = (
+                f"- PHP {php_version}"
+                f"（DSN charset: {'可信' if ctx_obj['dsn_charset_trusted'] else '不可信'}）"
+            )
+
+        from ai.prompts import VULN_TYPE_LABELS, VULN_TYPE_DESCRIPTIONS
+
+        initial_prompt = VERIFY_AND_FIX_TEMPLATE.format(
+            vuln_type_label=VULN_TYPE_LABELS.get(vuln_type, vuln_type),
+            vuln_type=vuln_type,
+            file_path=vuln.get("file_path", ""),
+            language=vuln.get("language", ""),
+            severity=vuln.get("severity", ""),
+            source_code=vuln.get("source_code", ""),
+            sink_code=vuln.get("sink_code", ""),
+            data_flow=vuln.get("data_flow", ""),
+            pipeline_stage=vuln.get("pipeline_stage", ""),
+            ai_analysis=vuln.get("ai_analysis", ""),
+            description=VULN_TYPE_DESCRIPTIONS.get(vuln_type, ""),
+            php_version_context=php_ctx,
+            context_code=context_code,
+        )
+
+        conversation_history = initial_prompt
+        final_result = None
+        last_response = None
+
+        for round_num in range(max_tool_rounds):
+            system_with_tools = VERIFY_AND_FIX_SYSTEM_PROMPT
+            has_tools = bool(tool_executor)
+            if has_tools:
+                system_with_tools += "\n\n" + tool_prompt
+
+            response = self._chat_raw(conversation_history,
+                                       system_prompt=system_with_tools,
+                                       max_tokens=8192)
+            if not response:
+                print(f"[VFIX] 第 {round_num+1} 轮 AI 无响应")
+                break
+            last_response = response
+
+            # 尝试解析工具调用
+            if tool_executor:
+                tool_calls = parse_tool_calls(response)
+                print(f"[VFIX] 第 {round_num+1} 轮: {len(tool_calls)} 个工具调用")
+                if tool_calls:
+                    tool_results = []
+                    for tc in tool_calls:
+                        print(f"[VFIX] 执行: {tc['name']}({tc.get('arguments', {})})")
+                        result = tool_executor.execute(
+                            tc["name"], tc.get("arguments", {})
+                        )
+                        tool_results.append(
+                            f"[{tc['name']} 结果]\n{result[:3000]}"
+                        )
+
+                    if tool_results:
+                        conversation_history = (
+                            initial_prompt
+                            + "\n\n---\n## 第 {} 轮\n".format(round_num + 1)
+                            + response
+                            + "\n\n工具执行结果：\n\n"
+                            + "\n\n".join(tool_results)
+                            + "\n\n请基于以上结果继续探索。如分析完成，输出最终 JSON 结果。"
+                        )
+                        continue
+
+            # 无工具调用，解析最终 JSON
+            final_result = self._parse_json(response)
+            if final_result:
+                print(f"[VFIX] 第 {round_num+1} 轮: 解析到最终结果")
+                break
+
+        if not final_result and last_response:
+            final_result = self._parse_json(last_response)
+
         if isinstance(final_result, list):
             final_result = final_result[0] if final_result and isinstance(final_result[0], dict) else None
         return final_result

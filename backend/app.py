@@ -858,25 +858,26 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
 
 def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log):
     """
-    AI 自动 Payload 构建 + 动态验证。
+    AI 自动 MCP 工具驱动验证 + 自动修复。
 
     对已通过 AI 深度分析的漏洞，逐一：
-      1. 调用 PayloadBuilder 构建针对性攻击 Payload
-      2. 调用 AIVerifier 验证 Payload 是否可触发漏洞
-      3. 写入 DB：ai_payload / ai_payload_result / status
+      1. AI 使用 MCP 工具（search_dangerous_calls/trace_variable_flow 等）
+         自主探索源码，验证漏洞真实性
+      2. 确认漏洞后构建攻击 Payload
+      3. 生成可用的修复代码
+      4. 写入 DB：ai_payload / ai_payload_result / ai_fix_code / status
 
     结果：
-      - status='confirmed'  → AI 确认漏洞（Payload 可触发）
-      - status='potential'  → AI 不确定（Payload 无法确认）
+      - status='confirmed'  → AI 确认漏洞
+      - status='potential'  → AI 不确定
       - status='false_positive' → AI 判定为误报
     """
-    from engine.payload_builder import PayloadBuilder
     from engine.ai_verifier import AIVerifier, VerificationResult
     from utils.code_extractor import extract_source_context
 
     vulns = (db.session.query(Vulnerability)
              .filter_by(scan_task_id=scan_id)
-             .filter(Vulnerability.ai_is_vulnerable.isnot(None))  # 只验证已 AI 分析过的
+             .filter(Vulnerability.ai_is_vulnerable.isnot(None))
              .all())
 
     if not vulns:
@@ -909,7 +910,16 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log):
             except Exception:
                 pass
 
-    # 转换为 dict 以供验证器使用
+    # 获取 PHP 版本
+    php_version = ""
+    try:
+        scan = db.session.get(ScanTask, scan_id)
+        if scan and scan.project:
+            php_version = scan.project.php_version or ""
+    except Exception:
+        pass
+
+    # 转换为 dict 以供验证器使用（含 ai_analysis）
     vuln_dicts = []
     for v in vulns:
         vd = {
@@ -921,24 +931,21 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log):
             "source_code": v.source_code or "",
             "sink_code": v.sink_code or "",
             "data_flow": v.data_flow or "",
+            "pipeline_stage": v.pipeline_stage or "",
+            "ai_analysis": v.ai_analysis or "",
             "protection_level": "none",
             "exploit_difficulty": "unknown",
         }
         vuln_dicts.append(vd)
 
-    # Step 1: 构建 Payload
-    builder = PayloadBuilder(client)
-    payload_sets = builder.build_payloads(vuln_dicts, source_code_map)
-    log.write(f"[VERIFY] built payloads for {len(payload_sets)} vulns\n")
-    log.flush()
-
-    # Step 2: AI 验证
+    # MCP 工具驱动验证 + 修复（一步完成）
     verifier = AIVerifier(client)
-    reports = verifier.verify(vuln_dicts, payload_sets, source_code_map)
-    log.write(f"[VERIFY] verification reports: {len(reports)}\n")
+    reports = verifier.verify(vuln_dicts, [], source_code_map,
+                               project_path=project_path, php_version=php_version)
+    log.write(f"[VERIFY] MCP verification reports: {len(reports)}\n")
     log.flush()
 
-    # Step 3: 写入 DB
+    # 写入 DB
     verified = 0
     for report in reports:
         idx = report.vuln_id
@@ -960,6 +967,10 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log):
             else:
                 v.status = "potential"
                 v.ai_payload_result = "uncertain"
+
+            # 保存 AI 生成的修复代码
+            if report.fix_code:
+                v.ai_fix_code = report.fix_code
 
     db.session.commit()
     log.write(f"[VERIFY] done: {verified} confirmed, {len(vulns) - verified} uncertain/potential\n")
