@@ -52,6 +52,28 @@ python app.py
 
 服务启动后访问 http://localhost:5000 即可使用。
 
+### Docker 部署（推荐）
+
+无需安装 Python 环境，一键启动：
+
+```bash
+# 克隆仓库
+git clone git@github.com:lonelysam3/redrock_sre_web_summer_assessment_2026.git
+cd redrock_sre_web_summer_assessment_2026
+
+# 配置 AI Key（二选一）
+#   A. 编辑 docker-compose.yml，取消 DEEPSEEK_API_KEY 注释并填入
+#   B. 启动后在 Web 页面 http://localhost:5000/settings 填写
+
+# 启动
+docker compose up -d
+```
+
+- 访问 `http://localhost:5000`（远程部署将 localhost 替换为机器 IP）
+- 数据持久化在 `./data` 目录，容器重建不丢失
+- 查看日志: `docker compose logs -f`
+- 停止: `docker compose down`
+
 ### 使用流程
 
 1. **上传项目** — 首页拖拽或选择项目源码压缩包（.zip / .tar.gz），选择语言类型（PHP 项目可指定目标版本）
