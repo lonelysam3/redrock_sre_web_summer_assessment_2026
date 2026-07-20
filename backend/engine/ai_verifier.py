@@ -196,8 +196,12 @@ class AIVerifier:
 
         try:
             response = self.ai_client._chat(prompt)
-            if isinstance(response, dict):
-                verdict_str = response.get("verdict", "potential")
+            # 归一化：AI 可能返回 list 或 dict
+            r = response
+            if isinstance(r, list):
+                r = r[0] if r and isinstance(r[0], dict) else None
+            if isinstance(r, dict):
+                verdict_str = r.get("verdict", "potential")
                 verdict_map = {
                     "confirmed": VerificationResult.CONFIRMED,
                     "potential": VerificationResult.POTENTIAL,
@@ -211,11 +215,11 @@ class AIVerifier:
                     line_number=vuln.get("line_number", vuln.get("sink_line", 0)),
                     vuln_type=vuln.get("vuln_type", ""),
                     result=verdict,
-                    confidence=response.get("confidence", 0.5),
-                    verified_payload=response.get("best_payload", ""),
-                    payload_effect=response.get("payload_effect", ""),
-                    evidence=response.get("evidence", ""),
-                    recommendation=response.get("recommendation", ""),
+                    confidence=r.get("confidence", 0.5),
+                    verified_payload=r.get("best_payload", ""),
+                    payload_effect=r.get("payload_effect", ""),
+                    evidence=r.get("evidence", ""),
+                    recommendation=r.get("recommendation", ""),
                 )
         except Exception as e:
             print(f"[VERIFIER] AI 验证异常: {e}")

@@ -230,9 +230,13 @@ class PayloadBuilder:
 """
         try:
             response = self.ai_client._chat(prompt)
-            if isinstance(response, list):
+            # 归一化
+            items = response
+            if isinstance(items, dict):
+                items = [items]
+            if isinstance(items, list):
                 payloads = []
-                for item in response:
+                for item in items:
                     if isinstance(item, dict) and "value" in item:
                         payloads.append(Payload(
                             value=item["value"],

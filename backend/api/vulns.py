@@ -159,23 +159,31 @@ def analyze_vuln(vuln_id: int):
     # 如果 AI 返回了结果，写入数据库
     if result:
         import json
-        v.ai_analysis = json.dumps(result, ensure_ascii=False)
-        v.ai_is_vulnerable = result.get("is_vulnerable", "uncertain")
-        v.ai_severity = result.get("severity", v.severity)
-        v.ai_cwe_id = result.get("cwe_id", "")
-        v.ai_owasp_category = result.get("owasp_category", "")
-        # 嵌套对象需要序列化为 JSON 字符串
-        v.ai_root_cause = json.dumps(result.get("root_cause", {}), ensure_ascii=False)
-        v.ai_attack_vector = json.dumps(result.get("attack_analysis", {}), ensure_ascii=False)
-        v.ai_fix_suggestion = json.dumps(result.get("fix_recommendation", {}), ensure_ascii=False)
-        # fix_code 是字符串，直接存
-        fix = result.get("fix_recommendation", {})
-        if isinstance(fix, dict):
-            primary = fix.get("primary", {})
-            v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
-        else:
-            v.ai_fix_code = ""
+        r = result
+        if isinstance(r, list):
+            r = r[0] if r and isinstance(r[0], dict) else None
+        if isinstance(r, dict):
+            v.ai_analysis = json.dumps(r, ensure_ascii=False)
+            v.ai_is_vulnerable = r.get("is_vulnerable", "uncertain")
+            v.ai_severity = r.get("severity", v.severity)
+            v.ai_cwe_id = r.get("cwe_id", "")
+            v.ai_owasp_category = r.get("owasp_category", "")
+            # 嵌套对象需要序列化为 JSON 字符串
+            v.ai_root_cause = json.dumps(r.get("root_cause", {}), ensure_ascii=False)
+            v.ai_attack_vector = json.dumps(r.get("attack_analysis", {}), ensure_ascii=False)
+            v.ai_fix_suggestion = json.dumps(r.get("fix_recommendation", {}), ensure_ascii=False)
+            # fix_code 是字符串，直接存
+            fix = r.get("fix_recommendation", {})
+            if isinstance(fix, dict):
+                primary = fix.get("primary", {})
+                v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
         db.session.commit()
+
+        # ---- 自动 Payload 构建 + 验证 ----
+        try:
+            _verify_single_vuln(v)
+        except Exception:
+            pass
 
     return jsonify(_serialize(v))
 
@@ -245,19 +253,23 @@ def analyze_all_vulns():
             }, ctx, php_version=php_version)
 
             if result:
-                v.ai_analysis = json.dumps(result, ensure_ascii=False)
-                v.ai_is_vulnerable = result.get("is_vulnerable", "uncertain")
-                v.ai_severity = result.get("severity", v.severity)
-                v.ai_cwe_id = result.get("cwe_id", "")
-                v.ai_owasp_category = result.get("owasp_category", "")
-                v.ai_root_cause = json.dumps(result.get("root_cause", {}), ensure_ascii=False)
-                v.ai_attack_vector = json.dumps(result.get("attack_analysis", {}), ensure_ascii=False)
-                v.ai_fix_suggestion = json.dumps(result.get("fix_recommendation", {}), ensure_ascii=False)
-                fix = result.get("fix_recommendation", {})
-                if isinstance(fix, dict):
-                    primary = fix.get("primary", {})
-                    v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
-                analyzed += 1
+                r = result
+                if isinstance(r, list):
+                    r = r[0] if r and isinstance(r[0], dict) else None
+                if isinstance(r, dict):
+                    v.ai_analysis = json.dumps(r, ensure_ascii=False)
+                    v.ai_is_vulnerable = r.get("is_vulnerable", "uncertain")
+                    v.ai_severity = r.get("severity", v.severity)
+                    v.ai_cwe_id = r.get("cwe_id", "")
+                    v.ai_owasp_category = r.get("owasp_category", "")
+                    v.ai_root_cause = json.dumps(r.get("root_cause", {}), ensure_ascii=False)
+                    v.ai_attack_vector = json.dumps(r.get("attack_analysis", {}), ensure_ascii=False)
+                    v.ai_fix_suggestion = json.dumps(r.get("fix_recommendation", {}), ensure_ascii=False)
+                    fix = r.get("fix_recommendation", {})
+                    if isinstance(fix, dict):
+                        primary = fix.get("primary", {})
+                        v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
+                    analyzed += 1
             else:
                 failed += 1
 
@@ -266,11 +278,75 @@ def analyze_all_vulns():
             failed += 1
             print(f"[AI] 分析漏洞 #{v.id} 失败: {e}")
 
+    # 自动触发 Payload 构建 + 验证
+    verified = 0
+    try:
+        from engine.payload_builder import PayloadBuilder
+        from engine.ai_verifier import AIVerifier, VerificationResult
+
+        analyzed_vulns = (Vulnerability.query
+                         .filter_by(scan_task_id=int(scan_id))
+                         .filter(Vulnerability.ai_is_vulnerable.isnot(None))
+                         .all())
+
+        if analyzed_vulns:
+            source_code_map = {}
+            for v in analyzed_vulns:
+                if v.file_path and v.file_path not in source_code_map:
+                    try:
+                        with open(v.file_path, encoding='utf-8', errors='ignore') as f:
+                            source_code_map[v.file_path] = f.read()
+                    except Exception:
+                        source_code_map[v.file_path] = v.source_code or ""
+
+            vuln_dicts = []
+            for v in analyzed_vulns:
+                vuln_dicts.append({
+                    "file_path": v.file_path,
+                    "line_number": v.line_number,
+                    "vuln_type": v.vuln_type,
+                    "severity": v.severity,
+                    "language": v.language,
+                    "source_code": v.source_code or "",
+                    "sink_code": v.sink_code or "",
+                    "data_flow": v.data_flow or "",
+                    "protection_level": "none",
+                    "exploit_difficulty": "unknown",
+                })
+
+            builder = PayloadBuilder(client)
+            payload_sets = builder.build_payloads(vuln_dicts, source_code_map)
+            verifier = AIVerifier(client)
+            reports = verifier.verify(vuln_dicts, payload_sets, source_code_map)
+
+            for report in reports:
+                if report.vuln_id < len(analyzed_vulns):
+                    av = analyzed_vulns[report.vuln_id]
+                    av.ai_payload = report.verified_payload
+                    av.ai_payload_evidence = report.evidence
+                    if report.result == VerificationResult.CONFIRMED:
+                        av.status = "confirmed"
+                        av.ai_payload_result = "success"
+                        verified += 1
+                    elif report.result == VerificationResult.POTENTIAL:
+                        av.status = "potential"
+                        av.ai_payload_result = "failed"
+                    elif report.result == VerificationResult.FALSE_POS:
+                        av.status = "false_positive"
+                        av.ai_payload_result = "failed"
+                    else:
+                        av.status = "potential"
+                        av.ai_payload_result = "uncertain"
+            db.session.commit()
+    except Exception as e:
+        print(f"[VERIFY] 自动验证失败: {e}")
+
     return jsonify({
         "ok": True,
         "analyzed": analyzed,
         "failed": failed,
         "total": len(vulns),
+        "verified": verified,
     })
 
 
@@ -304,7 +380,69 @@ def _serialize(v: Vulnerability) -> dict:
         "ai_fix_suggestion": v.ai_fix_suggestion,
         "ai_fix_code": v.ai_fix_code,
         "ai_confidence": v.ai_confidence,
+        # Payload 验证
+        "ai_payload": v.ai_payload,
+        "ai_payload_result": v.ai_payload_result,
+        "ai_payload_evidence": v.ai_payload_evidence,
         # 人工审核状态
         "status": v.status,
         "created_at": v.created_at.isoformat() if v.created_at else None,
     }
+
+
+def _verify_single_vuln(v: Vulnerability):
+    """
+    对单个已 AI 分析的漏洞进行 Payload 构建 + 验证。
+    用于手动分析接口的自动验证。
+    """
+    from engine.payload_builder import PayloadBuilder
+    from engine.ai_verifier import AIVerifier, VerificationResult
+    from ai.client import get_ai_client
+
+    client = get_ai_client()
+    if not client.is_configured():
+        return
+
+    source_code_map = {}
+    try:
+        if v.file_path:
+            with open(v.file_path, encoding='utf-8', errors='ignore') as f:
+                source_code_map[v.file_path] = f.read()
+    except Exception:
+        source_code_map[v.file_path] = v.source_code or ""
+
+    vuln_dict = {
+        "file_path": v.file_path,
+        "line_number": v.line_number,
+        "vuln_type": v.vuln_type,
+        "severity": v.severity,
+        "language": v.language,
+        "source_code": v.source_code or "",
+        "sink_code": v.sink_code or "",
+        "data_flow": v.data_flow or "",
+        "protection_level": "none",
+        "exploit_difficulty": "unknown",
+    }
+
+    builder = PayloadBuilder(client)
+    payload_sets = builder.build_payloads([vuln_dict], source_code_map)
+    verifier = AIVerifier(client)
+    reports = verifier.verify([vuln_dict], payload_sets, source_code_map)
+
+    if reports:
+        report = reports[0]
+        v.ai_payload = report.verified_payload
+        v.ai_payload_evidence = report.evidence
+        if report.result == VerificationResult.CONFIRMED:
+            v.status = "confirmed"
+            v.ai_payload_result = "success"
+        elif report.result == VerificationResult.POTENTIAL:
+            v.status = "potential"
+            v.ai_payload_result = "failed"
+        elif report.result == VerificationResult.FALSE_POS:
+            v.status = "false_positive"
+            v.ai_payload_result = "failed"
+        else:
+            v.status = "potential"
+            v.ai_payload_result = "uncertain"
+        db.session.commit()

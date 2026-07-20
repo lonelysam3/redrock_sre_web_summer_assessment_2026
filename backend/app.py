@@ -856,6 +856,117 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
     return analyzed, len(vulns)
 
 
+def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log):
+    """
+    AI 自动 Payload 构建 + 动态验证。
+
+    对已通过 AI 深度分析的漏洞，逐一：
+      1. 调用 PayloadBuilder 构建针对性攻击 Payload
+      2. 调用 AIVerifier 验证 Payload 是否可触发漏洞
+      3. 写入 DB：ai_payload / ai_payload_result / status
+
+    结果：
+      - status='confirmed'  → AI 确认漏洞（Payload 可触发）
+      - status='potential'  → AI 不确定（Payload 无法确认）
+      - status='false_positive' → AI 判定为误报
+    """
+    from engine.payload_builder import PayloadBuilder
+    from engine.ai_verifier import AIVerifier, VerificationResult
+    from utils.code_extractor import extract_source_context
+
+    vulns = (db.session.query(Vulnerability)
+             .filter_by(scan_task_id=scan_id)
+             .filter(Vulnerability.ai_is_vulnerable.isnot(None))  # 只验证已 AI 分析过的
+             .all())
+
+    if not vulns:
+        log.write("[VERIFY] no vulns to verify\n")
+        return 0, 0
+
+    log.write(f"[VERIFY] starting verification of {len(vulns)} vulns...\n")
+    log.flush()
+
+    # 构建 source_code_map（从 ORM 对象提取）
+    source_code_map = {}
+    for v in vulns:
+        if v.file_path and v.file_path not in source_code_map:
+            try:
+                fp = v.file_path if os.path.isabs(v.file_path) else os.path.join(project_path, v.file_path)
+                if os.path.isfile(fp):
+                    with open(fp, encoding='utf-8', errors='ignore') as f:
+                        source_code_map[v.file_path] = f.read()
+                else:
+                    source_code_map[v.file_path] = v.source_code or ""
+            except Exception:
+                source_code_map[v.file_path] = v.source_code or ""
+        # 跨文件 source
+        if v.source_file:
+            try:
+                sf = v.source_file if os.path.isabs(v.source_file) else os.path.join(project_path, v.source_file)
+                if os.path.isfile(sf) and v.source_file not in source_code_map:
+                    with open(sf, encoding='utf-8', errors='ignore') as f:
+                        source_code_map[v.source_file] = f.read()
+            except Exception:
+                pass
+
+    # 转换为 dict 以供验证器使用
+    vuln_dicts = []
+    for v in vulns:
+        vd = {
+            "file_path": v.file_path,
+            "line_number": v.line_number,
+            "vuln_type": v.vuln_type,
+            "severity": v.severity,
+            "language": v.language,
+            "source_code": v.source_code or "",
+            "sink_code": v.sink_code or "",
+            "data_flow": v.data_flow or "",
+            "protection_level": "none",
+            "exploit_difficulty": "unknown",
+        }
+        vuln_dicts.append(vd)
+
+    # Step 1: 构建 Payload
+    builder = PayloadBuilder(client)
+    payload_sets = builder.build_payloads(vuln_dicts, source_code_map)
+    log.write(f"[VERIFY] built payloads for {len(payload_sets)} vulns\n")
+    log.flush()
+
+    # Step 2: AI 验证
+    verifier = AIVerifier(client)
+    reports = verifier.verify(vuln_dicts, payload_sets, source_code_map)
+    log.write(f"[VERIFY] verification reports: {len(reports)}\n")
+    log.flush()
+
+    # Step 3: 写入 DB
+    verified = 0
+    for report in reports:
+        idx = report.vuln_id
+        if idx < len(vulns):
+            v = vulns[idx]
+            v.ai_payload = report.verified_payload
+            v.ai_payload_evidence = report.evidence
+
+            if report.result == VerificationResult.CONFIRMED:
+                v.status = "confirmed"
+                v.ai_payload_result = "success"
+                verified += 1
+            elif report.result == VerificationResult.POTENTIAL:
+                v.status = "potential"
+                v.ai_payload_result = "failed"
+            elif report.result == VerificationResult.FALSE_POS:
+                v.status = "false_positive"
+                v.ai_payload_result = "failed"
+            else:
+                v.status = "potential"
+                v.ai_payload_result = "uncertain"
+
+    db.session.commit()
+    log.write(f"[VERIFY] done: {verified} confirmed, {len(vulns) - verified} uncertain/potential\n")
+    log.flush()
+    return verified, len(vulns)
+
+
 def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto_ai: bool = False):
     """后台线程中执行扫描。"""
     import traceback, sys as _sys
@@ -929,10 +1040,26 @@ def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto
                     _sys.stderr.flush()
                     analyzed, total = _run_ai_analysis_on_vulns(scan_id, project_path, ai_client, _sys.stderr)
                     if analyzed >= total:
-                        scan.status = "done"
                         _sys.stderr.write(f"[SCAN] AI analysis complete ({analyzed}/{total})\n")
                     else:
                         _sys.stderr.write(f"[SCAN] AI analysis partial ({analyzed}/{total}), {total - analyzed} failed\n")
+                    db.session.commit()
+                    _sys.stderr.flush()
+
+                    # ---- 自动 Payload 构建 + 验证（AI 确认/不确定）----
+                    scan.status = "verifying"
+                    db.session.commit()
+                    _sys.stderr.write(f"[SCAN] starting AI verification of {total} vulns...\n")
+                    _sys.stderr.flush()
+                    try:
+                        verified, vt = _run_ai_verification_on_vulns(scan_id, project_path, ai_client, _sys.stderr)
+                        _sys.stderr.write(f"[SCAN] AI verification done: {verified}/{vt} confirmed\n")
+                    except Exception:
+                        traceback.print_exc(file=_sys.stderr)
+                        _sys.stderr.write("[SCAN] AI verification failed, continuing\n")
+                    _sys.stderr.flush()
+
+                    scan.status = "done"
                     db.session.commit()
                     _sys.stderr.flush()
         except Exception:
