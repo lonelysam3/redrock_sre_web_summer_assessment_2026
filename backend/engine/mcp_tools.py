@@ -121,6 +121,24 @@ MCP_TOOLS: list[MCPTool] = [
             "required": ["project_path"],
         },
     ),
+    MCPTool(
+        name="apply_code_fix",
+        description=(
+            "直接修改源码文件，应用修复。传入文件路径、起始行、结束行和替换代码，"
+            "工具会用新代码替换指定行范围的内容。自动创建 .bak 备份文件。"
+            "用于在验证漏洞后自动修复代码。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "要修改的文件路径"},
+                "start_line": {"type": "integer", "description": "替换起始行号（1-based）"},
+                "end_line": {"type": "integer", "description": "替换结束行号（1-based，含）"},
+                "new_code": {"type": "string", "description": "替换用的新代码（可多行）"},
+            },
+            "required": ["file_path", "start_line", "end_line", "new_code"],
+        },
+    ),
 ]
 
 
@@ -352,6 +370,87 @@ class MCPToolExecutor:
             "files": {k: v for k, v in by_ext.items()},
         }, ensure_ascii=False, indent=2)
 
+    def apply_code_fix(self, file_path: str, start_line: int,
+                        end_line: int, new_code: str) -> str:
+        """
+        直接修改源码文件，用 new_code 替换 [start_line, end_line] 范围。
+        自动创建 .bak 备份。
+
+        参数:
+            file_path:  文件路径（绝对或相对 project_path）
+            start_line: 起始行（1-based，含）
+            end_line:   结束行（1-based，含）
+            new_code:   替换用的新代码
+
+        返回:
+            JSON 字符串，包含修改结果
+        """
+        import shutil
+
+        # 解析路径
+        fp = Path(file_path)
+        if not fp.is_absolute():
+            fp = Path(self.project_path) / file_path
+
+        if not fp.exists():
+            return json.dumps({
+                "success": False,
+                "error": f"文件不存在: {fp}"
+            }, ensure_ascii=False)
+
+        try:
+            # 读取原文件
+            with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+
+            total = len(lines)
+            s = max(0, start_line - 1)
+            e = min(total, end_line)
+
+            if s >= total:
+                return json.dumps({
+                    "success": False,
+                    "error": f"起始行 {start_line} 超出文件总行数 {total}"
+                }, ensure_ascii=False)
+
+            # 创建备份
+            bak = str(fp) + '.bak'
+            shutil.copy2(fp, bak)
+
+            # 确保 new_code 以换行结尾
+            fixed_code = new_code
+            if not fixed_code.endswith('\n'):
+                fixed_code += '\n'
+
+            # 执行替换
+            new_lines = (
+                lines[:s]
+                + fixed_code.splitlines(keepends=True)
+                + lines[e:]
+            )
+
+            with open(fp, 'w', encoding='utf-8', errors='ignore') as f:
+                f.writelines(new_lines)
+
+            # 更新内存缓存
+            self._source_map[str(fp)] = ''.join(new_lines)
+
+            return json.dumps({
+                "success": True,
+                "file": str(fp),
+                "backup": bak,
+                "old_lines": f"{start_line}-{end_line}（共 {e - s} 行）",
+                "new_lines_count": len(fixed_code.splitlines()),
+                "old_code_preview": ''.join(lines[s:e]).rstrip()[:300],
+                "new_code_preview": fixed_code.rstrip()[:300],
+            }, ensure_ascii=False, indent=2)
+
+        except Exception as ex:
+            return json.dumps({
+                "success": False,
+                "error": f"修改失败: {ex}"
+            }, ensure_ascii=False)
+
     # ================================================================
     # 工具调度
     # ================================================================
@@ -380,6 +479,12 @@ class MCPToolExecutor:
             ),
             "list_project_files": lambda: self.list_project_files(
                 arguments.get("project_path", self.project_path),
+            ),
+            "apply_code_fix": lambda: self.apply_code_fix(
+                arguments.get("file_path", ""),
+                int(arguments.get("start_line", 1)),
+                int(arguments.get("end_line", 1)),
+                arguments.get("new_code", ""),
             ),
         }
 
@@ -437,6 +542,7 @@ search_dangerous_calls(file_path="register.php")
 - 用 read_file_region 读取关键代码上下文
 - 用 search_project(pattern="exec|system") 跨文件搜索危险函数
 - 工具返回的 file_path 可用于后续 read_file_region
+- 确认漏洞后，用 apply_code_fix 直接修改源文件应用修复
 - 分析完成后输出最终 JSON，不要再用 ```json 包裹""".format(tool_list=tool_list)
 
 
