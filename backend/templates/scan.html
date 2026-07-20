@@ -96,6 +96,8 @@
                 <span class="badge badge-yellow">扫描中...</span>
                 {% elif scan.status == 'analyzing' %}
                 <span class="badge" style="background:var(--blue);color:#111">🤖 AI分析中</span>
+                {% elif scan.status == 'verifying' %}
+                <span class="badge" style="background:var(--mauve);color:#111">🔍 MCP验证+修复中</span>
                 {% elif scan.status == 'failed' %}
                 <span class="badge badge-red">失败</span>
                 {% else %}
@@ -194,6 +196,31 @@
                 <div style="background:var(--blue);height:100%;width:{{ (ai_analyzed_count / scan.vulns_found * 100) if scan.vulns_found else 0 }}%;transition:width 0.5s;"></div>
             </div>
             <script>setTimeout(() => location.reload(), 3000);</script>
+        </div>
+
+        {% elif scan.status == 'verifying' %}
+        <!-- MCP 工具验证 + 修复中 -->
+        <div class="safe-result">
+            <div class="safe-hero" style="border-color: rgba(203, 166, 247, 0.4);">
+                <div class="safe-icon">🔍</div>
+                <h2 style="color: var(--mauve);">MCP 验证 + 修复中...</h2>
+                <p class="safe-subtitle">AI 正在使用工具探索源码、验证漏洞并自动修复，请稍候</p>
+            </div>
+            <div class="safe-stats">
+                <div class="safe-stat">
+                    <div class="safe-stat-num">{{ scan.vulns_found }}</div>
+                    <div class="safe-stat-label">待验证漏洞</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num" style="color: var(--mauve);">🔧</div>
+                    <div class="safe-stat-label">修复中</div>
+                </div>
+                <div class="safe-stat">
+                    <div class="safe-stat-num" style="color: var(--subtext);">{{ scan.vulns_found }}</div>
+                    <div class="safe-stat-label">剩余</div>
+                </div>
+            </div>
+            <script>setTimeout(() => location.reload(), 5000);</script>
         </div>
 
         {% elif scan.status == 'running' %}
@@ -323,6 +350,7 @@
         {% set confirmed_count = vulns|selectattr('ai_is_vulnerable', 'equalto', 'true')|list|length %}
         {% set uncertain_count = vulns|selectattr('ai_is_vulnerable', 'equalto', 'uncertain')|list|length %}
         {% set fp_count = vulns|selectattr('ai_is_vulnerable', 'equalto', 'false')|list|length %}
+        {% set fixed_count = vulns|selectattr('ai_fix_code', 'ne', None)|selectattr('ai_fix_code', 'ne', '')|list|length %}
 
         <div class="stats">
             <div class="stat"><div class="num critical">{{ critical_count }}</div><div class="label">🔴 Critical</div></div>
@@ -332,6 +360,9 @@
             <div class="stat"><div class="num">{{ vulns|length }}</div><div class="label">总计</div></div>
             <div class="stat"><div class="num" style="color:#a6e3a1">{{ confirmed_count }}</div><div class="label">AI确认漏洞</div></div>
             <div class="stat"><div class="num" style="color:#f9e2af">{{ uncertain_count }}</div><div class="label">AI不确定</div></div>
+            {% if fixed_count > 0 %}
+            <div class="stat"><div class="num" style="color:#89b4fa">{{ fixed_count }}</div><div class="label">🔧 AI已修复</div></div>
+            {% endif %}
         </div>
 
         <!-- 操作按钮行 -->
@@ -419,6 +450,7 @@
                         <select onchange="updateStatus({{ v.id }}, this.value)" style="padding:2px 6px;font-size:0.8em;border-radius:4px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;">
                             <option value="pending" {% if v.status == 'pending' %}selected{% endif %}>待处理</option>
                             <option value="confirmed" {% if v.status == 'confirmed' %}selected{% endif %}>已确认</option>
+                            <option value="fixed" {% if v.status == 'fixed' or (v.ai_fix_code and v.ai_fix_code|length > 0) %}selected{% endif %}>🔧 AI已修复</option>
                             <option value="potential" {% if v.status == 'potential' %}selected{% endif %}>潜在</option>
                             <option value="false_positive" {% if v.status == 'false_positive' %}selected{% endif %}>误报</option>
                             <option value="reviewed" {% if v.status == 'reviewed' %}selected{% endif %}>已审查</option>
@@ -526,6 +558,47 @@
                         </details>
                         {% endif %}
                         {% endif %}
+                    </details>
+                    {% endif %}
+
+                    <!-- MCP 工具验证结果 -->
+                    {% if v.ai_payload and v.ai_payload|length > 0 %}
+                    <details>
+                        <summary><strong>🔍 MCP 验证结果</strong>
+                            {% if v.ai_payload_result == 'success' %}
+                            <span class="badge badge-green" style="margin-left:6px;">✅ 通过</span>
+                            {% elif v.ai_payload_result == 'failed' %}
+                            <span class="badge" style="margin-left:6px;background:#f38ba8;">❌ 未通过</span>
+                            {% elif v.ai_payload_result == 'uncertain' %}
+                            <span class="badge" style="margin-left:6px;background:var(--yellow);">❓ 不确定</span>
+                            {% endif %}
+                        </summary>
+                        {% if v.ai_payload %}
+                        <p style="margin-top:4px;"><strong>攻击 Payload:</strong></p>
+                        <pre class="fix-code">{{ v.ai_payload }}</pre>
+                        {% endif %}
+                        {% if v.ai_payload_evidence %}
+                        <p style="margin-top:6px;"><strong>验证证据:</strong></p>
+                        <p style="color:#a6adc8;font-size:0.85em;">{{ v.ai_payload_evidence }}</p>
+                        {% endif %}
+                    </details>
+                    {% endif %}
+
+                    <!-- AI 自动修复确认 -->
+                    {% if v.ai_fix_code and v.ai_fix_code|length > 0 %}
+                    <details open>
+                        <summary><strong>🔧 AI 自动修复</strong>
+                            <span class="badge" style="margin-left:6px;background:var(--blue);color:#111;">已应用</span>
+                        </summary>
+                        <div style="background:#1a1b26;border-left:3px solid var(--blue);padding:8px 12px;margin-top:6px;border-radius:0 6px 6px 0;">
+                            <p style="color:#89b4fa;font-size:0.85em;">
+                                🤖 AI 已通过 MCP 工具直接修改源文件，应用了以下修复：
+                            </p>
+                            <pre class="fix-code">{{ v.ai_fix_code }}</pre>
+                            <p style="color:#a6e3a1;font-size:0.8em;margin-top:4px;">
+                                📁 原文件已备份为 .bak，可在项目目录中查看
+                            </p>
+                        </div>
                     </details>
                     {% endif %}
                 </div>
