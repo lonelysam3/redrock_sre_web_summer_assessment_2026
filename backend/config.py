@@ -20,6 +20,10 @@ load_dotenv()
 # 项目根目录（backend/ 目录）
 BASE_DIR = Path(__file__).resolve().parent
 
+# Docker 部署时可通过 DATA_DIR 将数据库/上传/解压统一挂载到外部卷
+# 不设置则默认放在 backend/ 下
+DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR)))
+
 
 class Config:
     """Flask 应用配置类，所有配置集中管理"""
@@ -28,8 +32,8 @@ class Config:
     # 生产环境务必通过环境变量覆盖此默认密钥
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
 
-    # SQLite 数据库文件存放在 backend/audit.db
-    SQLALCHEMY_DATABASE_URI = f"sqlite:///{BASE_DIR / 'audit.db'}"
+    # SQLite 数据库文件
+    SQLALCHEMY_DATABASE_URI = f"sqlite:///{DATA_DIR / 'audit.db'}"
     SQLALCHEMY_TRACK_MODIFICATIONS = False  # 关闭修改追踪，节省内存
 
     # ---- DeepSeek AI API（兼容 OpenAI 接口） ----
@@ -41,5 +45,5 @@ class Config:
     # ---- 上传 / 扫描限制 ----
     MAX_UPLOAD_SIZE_MB = 100  # 单次上传的压缩包最大 100MB
     MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # Flask 请求体上限 (bytes)
-    UPLOAD_FOLDER = BASE_DIR / "uploads"  # 上传文件临时存放目录
-    EXTRACT_FOLDER = BASE_DIR / "extracted"  # 解压后的项目源码目录
+    UPLOAD_FOLDER = DATA_DIR / "uploads"  # 上传文件临时存放目录
+    EXTRACT_FOLDER = DATA_DIR / "extracted"  # 解压后的项目源码目录
