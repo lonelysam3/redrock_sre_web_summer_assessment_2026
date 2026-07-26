@@ -317,21 +317,15 @@ def analyze_all_vulns():
                     "source_code": v.source_code or "",
                     "sink_code": v.sink_code or "",
                     "data_flow": v.data_flow or "",
-            source_code_map = {}
-            for v in analyzed_vulns:
-                if v.file_path and v.file_path not in source_code_map:
-                    try:
-                        # 防御性路径校验：防止路径穿越（即使 file_path 来自数据库）
-                        file_real = os.path.realpath(v.file_path)
-                        if proj_path:
-                            proj_real = os.path.realpath(proj_path)
-                            if not file_real.startswith(proj_real + os.sep) and file_real != proj_real:
-                                source_code_map[v.file_path] = v.source_code or ""
-                                continue
-                        with open(file_real, encoding='utf-8', errors='ignore') as f:
-                            source_code_map[v.file_path] = f.read()
-                    except Exception:
-                        source_code_map[v.file_path] = v.source_code or ""
+                    "pipeline_stage": v.pipeline_stage or "",
+                    "ai_analysis": v.ai_analysis or "",
+                    "protection_level": "none",
+                    "exploit_difficulty": "unknown",
+                })
+
+            verifier = AIVerifier(client)
+            reports = verifier.verify(vuln_dicts, [], source_code_map,
+                                       project_path=proj_path, php_version=php_version)
 
             for report in reports:
                 if report.vuln_id < len(analyzed_vulns):
