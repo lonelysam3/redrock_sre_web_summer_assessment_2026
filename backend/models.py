@@ -11,7 +11,14 @@
   Project (1) ──< (N) ScanTask (1) ──< (N) Vulnerability
 """
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 中国时区 UTC+8
+CN_TZ = timezone(timedelta(hours=8))
+
+def now_cn():
+    """返回中国标准时间 (UTC+8)"""
+    return datetime.now(CN_TZ).replace(tzinfo=None)
 
 # 全局数据库对象，由 app.py 中 init_app() 初始化
 db = SQLAlchemy()
@@ -33,7 +40,7 @@ class Project(db.Model):
     source_type = db.Column(db.String(20), default="local")                 # 来源: local(本地路径) / upload(压缩包上传)
     original_filename = db.Column(db.String(500), nullable=True)           # 上传的原始文件名（仅 upload 类型）
     php_version = db.Column(db.String(20), nullable=True)                  # PHP 版本（仅 php 项目），如 5.0/5.3/7.4/8.0
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)           # 创建时间
+    created_at = db.Column(db.DateTime, default=now_cn)           # 创建时间
 
     # 反向关系：通过 project.scans 获取所有关联的扫描任务
     # cascade="all, delete-orphan": 删除项目时自动级联删除所有扫描和漏洞
@@ -62,7 +69,7 @@ class ScanTask(db.Model):
     vulns_found = db.Column(db.Integer, default=0)                         # 发现的漏洞总数
     started_at = db.Column(db.DateTime, nullable=True)                     # 扫描开始时间
     finished_at = db.Column(db.DateTime, nullable=True)                    # 扫描完成时间
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)           # 任务创建时间
+    created_at = db.Column(db.DateTime, default=now_cn)           # 任务创建时间
 
     # 反向关系：通过 scan_task.vulnerabilities 获取该次扫描的所有漏洞
     vulnerabilities = db.relationship(
@@ -121,7 +128,7 @@ class Vulnerability(db.Model):
 
     # ---- 最终判定 ----
     status = db.Column(db.String(20), default="pending")                   # pending(待处理) / confirmed(AI验证成功) / potential(AI无法确认) / false_positive(误报) / reviewed(已审查)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)           # 记录创建时间
+    created_at = db.Column(db.DateTime, default=now_cn)           # 记录创建时间
 
 
 class AISettings(db.Model):
@@ -138,7 +145,7 @@ class AISettings(db.Model):
     base_url = db.Column(db.String(300), default="https://api.deepseek.com")  # API 基础地址
     model = db.Column(db.String(100), default="deepseek-chat")             # 模型名称
     provider = db.Column(db.String(50), default="deepseek")                # 提供方标识: deepseek/openai/custom
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow)           # 最后更新时间
+    updated_at = db.Column(db.DateTime, default=now_cn)           # 最后更新时间
 
     @staticmethod
     def get():

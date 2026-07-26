@@ -38,7 +38,7 @@ from flask import Flask
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import Config
-from models import db, Project, ScanTask, Vulnerability, AISettings
+from models import db, Project, ScanTask, Vulnerability, AISettings, now_cn
 from engine import scan_project
 from ai.client import get_ai_client, reset_ai_client
 
@@ -270,7 +270,7 @@ def create_app() -> Flask:
         scan = ScanTask(
             project_id=project_id,
             status="running",
-            started_at=datetime.utcnow(),
+            started_at=now_cn(),
         )
         db.session.add(scan)
         db.session.commit()
@@ -541,7 +541,7 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
             scan.scanned_files = scan.total_files
             scan.vulns_found = len(vulns)
             scan.status = "done"
-            scan.finished_at = datetime.utcnow()
+            scan.finished_at = now_cn()
 
             # ---- 保存漏洞记录 ----
             for i, v in enumerate(vulns):
@@ -1021,7 +1021,7 @@ def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto
             scan.scanned_files = scan.total_files
             scan.vulns_found = n
             scan.status = "done"
-            scan.finished_at = datetime.utcnow()
+            scan.finished_at = now_cn()
 
             for v in vulns:
                 db.session.add(Vulnerability(

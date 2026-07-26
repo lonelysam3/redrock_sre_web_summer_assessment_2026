@@ -10,10 +10,16 @@
     <!-- ========== 顶部导航栏 ========== -->
     <header class="header">
         <div class="container">
-            <h1>🔍 代码审计平台</h1>
+            <h1>代码审计平台</h1>
             <nav>
                 <a href="/" class="active">项目</a>
-                <a href="/settings">⚙ 设置</a>
+                <a href="/settings">设置</a>
+                <span class="header-theme-wrap">
+                    <span class="header-theme-label">主题</span>
+                    <button class="theme-toggle" onclick="toggleTheme()" title="切换深色/浅色模式">
+                        <span class="toggle-knob"></span>
+                    </button>
+                </span>
             </nav>
         </div>
     </header>
@@ -21,7 +27,7 @@
     <main class="container">
         <!-- ========== 上传压缩包创建项目 ========== -->
         <section class="card">
-            <h2>📦 上传项目源码</h2>
+            <h2>上传项目源码</h2>
             <p class="hint">上传压缩包（zip、tar.gz、tar.bz2、tar），后端自动解压并进行安全扫描。不支持直接输入本地路径。</p>
             <form id="upload-project-form" class="form-row" enctype="multipart/form-data">
                 <!-- 项目名称（可选） -->
@@ -53,10 +59,10 @@
                 </select>
                 <button type="submit" class="btn btn-primary">上传并扫描</button>
             </form>
-            <!-- AI 自动分析开关（表单外独立行，通过 JS 关联） -->
+            <!-- AI 自动分析开关 -->
             <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;margin-top:10px;">
                 <input type="checkbox" id="auto-ai-checkbox" checked style="accent-color:var(--blue);">
-                🤖 扫描后自动 AI 分析
+                扫描后自动 AI 分析
             </label>
             <!-- 上传进度提示 -->
             <div id="upload-status" class="upload-status" style="display:none;"></div>
@@ -89,8 +95,8 @@
                         <td><code>{{ p.original_filename or '-' }}</code></td>
                         <!-- 格式化时间为 YYYY-MM-DD HH:MM -->
                         <td>{{ p.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                        <td>
-                            <!-- 删除按钮，调用 JS 函数 -->
+                        <td style="display:flex;gap:6px;align-items:center;">
+                            <a href="/project/{{ p.id }}" class="btn btn-sm">查看</a>
                             <button class="btn btn-sm btn-danger" onclick="deleteProject({{ p.id }})">删除</button>
                         </td>
                     </tr>
@@ -105,6 +111,29 @@
     </main>
 
     <script>
+        // === 主题切换 ===
+        (function() {
+            const saved = localStorage.getItem('theme');
+            if (saved) {
+                if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+                else document.documentElement.removeAttribute('data-theme');
+            } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+                document.documentElement.setAttribute('data-theme', 'light');
+            }
+            window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e) {
+                if (!localStorage.getItem('theme')) {
+                    if (e.matches) document.documentElement.setAttribute('data-theme', 'light');
+                    else document.documentElement.removeAttribute('data-theme');
+                }
+            });
+        })();
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme');
+            const next = current === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', next);
+            localStorage.setItem('theme', next);
+        }
+
         /**
          * 上传压缩包表单处理
          * ==================
@@ -152,7 +181,7 @@
             // 显示上传中状态
             uploadStatus.style.display = 'block';
             uploadStatus.className = 'upload-status uploading';
-            uploadStatus.textContent = '⏳ 正在上传并解压文件...';
+            uploadStatus.innerHTML = '<span class="spinner"></span> 正在上传并解压文件...';
 
             const formData = new FormData(uploadForm);
             formData.set('auto_scan', 'true');
@@ -169,22 +198,22 @@
 
                 if (resp.ok) {
                     uploadStatus.className = 'upload-status success';
-                    const rescanBtn = `<button class="btn btn-sm btn-primary" onclick="rescanProject(${result.id}, '${result.name}')" style="margin-left:8px;">🔄 重新扫描</button>`;
+                    const rescanBtn = `<button class="btn btn-sm btn-primary" onclick="rescanProject(${result.id}, '${result.name}')" style="margin-left:8px;">重新扫描</button>`;
                     if (result.scan_id) {
-                        uploadStatus.innerHTML = `✅ 上传成功！项目 "${result.name}" 已创建，扫描中... <a href="/project/${result.id}">查看项目</a> <a href="/scan/${result.scan_id}">查看扫描</a> ${rescanBtn}`;
+                        uploadStatus.innerHTML = `上传成功！项目 "${result.name}" 已创建，扫描中... <a href="/project/${result.id}">查看项目</a> <a href="/scan/${result.scan_id}">查看扫描</a> ${rescanBtn}`;
                         setTimeout(() => location.reload(), 3000);
                     } else {
-                        uploadStatus.innerHTML = `✅ 项目 "${result.name}" 已创建 <a href="/project/${result.id}">查看项目</a> ${rescanBtn}`;
+                        uploadStatus.innerHTML = `项目 "${result.name}" 已创建 <a href="/project/${result.id}">查看项目</a> ${rescanBtn}`;
                         setTimeout(() => location.reload(), 2000);
                     }
                 } else {
                     uploadStatus.className = 'upload-status error';
-                    uploadStatus.textContent = '❌ ' + (result.error || '上传失败');
+                    uploadStatus.textContent = (result.error || '上传失败');
                     alert(result.error || '上传失败，请重试');
                 }
             } catch (err) {
                 uploadStatus.className = 'upload-status error';
-                uploadStatus.textContent = '❌ 网络错误: ' + err.message;
+                uploadStatus.textContent = '网络错误: ' + err.message;
             }
         });
 

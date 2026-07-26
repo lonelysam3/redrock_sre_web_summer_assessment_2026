@@ -10,9 +10,15 @@
     <!-- ========== 顶部导航栏 ========== -->
     <header class="header">
         <div class="container">
-            <h1>⚙️ AI 配置</h1>
+            <a href="javascript:history.back()" class="btn btn-sm" style="margin-right:12px;">返回</a>
+            <h1>AI 配置</h1>
             <nav>
-                <a href="/">← 返回项目</a>
+                <span class="header-theme-wrap">
+                    <span class="header-theme-label">主题</span>
+                    <button class="theme-toggle" onclick="toggleTheme()" title="切换深色/浅色模式">
+                        <span class="toggle-knob"></span>
+                    </button>
+                </span>
             </nav>
         </div>
     </header>
@@ -43,7 +49,7 @@
                                placeholder="sk-..."
                                value="{% if settings.api_key %}***{{ settings.api_key[-4:] }}{% endif %}">
                         <!-- 切换密码可见性按钮 -->
-                        <button type="button" class="btn btn-sm" onclick="toggleKey()">👁</button>
+                        <button type="button" class="btn btn-sm" onclick="toggleKey()">显示</button>
                     </div>
                     <small>密钥仅存储在你本地数据库中，不会上传到任何地方。</small>
                 </div>
@@ -88,7 +94,7 @@
 
         <!-- ========== 各平台默认配置参考表 ========== -->
         <div class="card">
-            <h3>📋 各平台默认配置</h3>
+            <h3>各平台默认配置</h3>
             <table class="table">
                 <thead>
                     <tr><th>平台</th><th>API 地址</th><th>模型</th><th>获取 API Key</th></tr>
@@ -118,6 +124,29 @@
     </main>
 
     <script>
+        // === 主题切换 ===
+        (function() {
+            const saved = localStorage.getItem('theme');
+            if (saved) {
+                if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+                else document.documentElement.removeAttribute('data-theme');
+            } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+                document.documentElement.setAttribute('data-theme', 'light');
+            }
+            window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e) {
+                if (!localStorage.getItem('theme')) {
+                    if (e.matches) document.documentElement.setAttribute('data-theme', 'light');
+                    else document.documentElement.removeAttribute('data-theme');
+                }
+            });
+        })();
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme');
+            const next = current === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', next);
+            localStorage.setItem('theme', next);
+        }
+
         /**
          * 平台预设配置
          * ============
@@ -170,9 +199,9 @@
                 body: JSON.stringify(data),
             });
             if (resp.ok) {
-                showStatus('✅ 配置已保存', 'success');
+                showStatus('配置已保存', 'success');
             } else {
-                showStatus('❌ 保存失败', 'error');
+                showStatus('保存失败', 'error');
             }
         });
 
@@ -195,9 +224,9 @@
             const data = await resp.json();
 
             if (data.ok) {
-                showStatus('✅ ' + data.message, 'success');
+                showStatus(data.message, 'success');
             } else {
-                showStatus('❌ ' + (data.error || '连接失败'), 'error');
+                showStatus((data.error || '连接失败'), 'error');
             }
             btn.disabled = false;
             btn.textContent = '测试连接';
@@ -260,11 +289,11 @@
                 list.style.display = 'block';
                 status.style.display = 'block';
                 status.style.color = 'var(--green)';
-                status.textContent = `✅ 找到 ${result.models.length} 个模型，点击选择`;
+                status.textContent = `找到 ${result.models.length} 个模型，点击选择`;
             } else {
                 status.style.display = 'block';
                 status.style.color = 'var(--red)';
-                status.textContent = '❌ ' + (result.error || '获取失败');
+                status.textContent = (result.error || '获取失败');
             }
 
             btn.disabled = false;

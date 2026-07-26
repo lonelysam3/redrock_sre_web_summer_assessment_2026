@@ -6,72 +6,24 @@
     <title>扫描 #{{ scan.id }} — 代码审计平台</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <style>
-        /* ========== 本页面专用样式 ========== */
-
-        /* 漏洞列表：纵向排列，间距 12px */
-        .vuln-list { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
-
-        /* 单个漏洞卡片：左侧彩色边框表示严重程度 */
-        .vuln-item { background: #1e1e2e; border-radius: 8px; padding: 16px; border-left: 4px solid #555; }
-        .vuln-item.critical { border-left-color: #f38ba8; }   /* 红色 = 严重 */
-        .vuln-item.high     { border-left-color: #fab387; }   /* 橙色 = 高 */
-        .vuln-item.medium   { border-left-color: #f9e2af; }   /* 黄色 = 中 */
-        .vuln-item.low      { border-left-color: #a6e3a1; }   /* 绿色 = 低 */
-
-        /* 漏洞卡片头部：类型 + 等级 + AI 标记 */
-        .vuln-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .vuln-type { font-weight: bold; font-size: 1.05em; }
-        .vuln-meta { display: flex; gap: 12px; font-size: 0.85em; color: #a6adc8; }
-
-        /* 代码片段展示区：深色背景 + 等宽字体 */
-        .vuln-code {
-            background: #11111b;
-            border-radius: 6px;
-            padding: 12px;
-            margin: 8px 0;
-            font-family: 'Cascadia Code', 'Fira Code', monospace;
-            font-size: 0.85em;
-            overflow-x: auto;
-            white-space: pre;            /* 保留原始格式 */
-        }
-        .vuln-code .marker { color: #f38ba8; }   /* SOURCE/SINK 标记为红色 */
-
-        /* AI 分析结果区域 */
-        .ai-result { background: #1e1e2e; border: 1px solid #45475a; border-radius: 6px; padding: 12px; margin-top: 8px; }
-        .ai-result h4 { margin: 0 0 8px; color: #89b4fa; }
-
-        /* AI 修复代码展示 */
-        .fix-code {
-            background: #11111b;
-            border-radius: 4px;
-            padding: 8px;
-            font-family: monospace;
-            font-size: 0.8em;
-            overflow-x: auto;
-        }
-
-        /* 统计卡片区：自动列宽网格 */
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
-        .stat { background: #1e1e2e; border-radius: 8px; padding: 16px; text-align: center; }
-        .stat .num { font-size: 2em; font-weight: bold; }
-        .stat .label { font-size: 0.8em; color: #a6adc8; margin-top: 4px; }
-        .stat .num.critical { color: #f38ba8; }    /* 红色数字 */
-        .stat .num.high     { color: #fab387; }    /* 橙色数字 */
-        .stat .num.medium   { color: #f9e2af; }    /* 黄色数字 */
-        .stat .num.low      { color: #a6e3a1; }    /* 绿色数字 */
-
-        /* 筛选器区域 */
-        .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-        .filters select, .filters input { padding: 6px 12px; border-radius: 6px; border: 1px solid #45475a; background: #1e1e2e; color: #cdd6f4; }
+        /* 本页面样式已合并至 style.css (CSS变量) */
+        /* 此处仅保留页面特有覆盖 */
+        .vuln-code .marker { color: var(--red); }
     </style>
 </head>
 <body>
     <!-- ========== 顶部导航栏 ========== -->
     <header class="header">
         <div class="container">
-            <h1>🔍 <a href="/">扫描 #{{ scan.id }}</a></h1>
+            <a href="javascript:history.back()" class="btn btn-sm" style="margin-right:12px;">返回</a>
+            <h1><a href="/">扫描 #{{ scan.id }}</a></h1>
             <nav>
-                <a href="/project/{{ project.id }}">← {{ project.name }}</a>
+                <span class="header-theme-wrap">
+                    <span class="header-theme-label">主题</span>
+                    <button class="theme-toggle" onclick="toggleTheme()" title="切换深色/浅色模式">
+                        <span class="toggle-knob"></span>
+                    </button>
+                </span>
             </nav>
         </div>
     </header>
@@ -83,9 +35,9 @@
                 <strong>项目：</strong> {{ project.name }} ({{ project.language }})
                 {% if project.language == 'php' %}
                 {% if project.php_version and project.php_version.startswith('auto(') %}
-                <span class="badge" style="background:#45475a;color:#a6e3a1;margin-left:4px;">🤖 PHP {{ project.php_version[5:-1] }} (自动检测)</span>
+                <span class="badge" style="background:var(--surface);color:var(--green);margin-left:4px;">PHP {{ project.php_version[5:-1] }} (自动检测)</span>
                 {% elif project.php_version %}
-                <span class="badge" style="background:#45475a;margin-left:4px;">PHP {{ project.php_version }}</span>
+                <span class="badge" style="background:var(--surface);margin-left:4px;">PHP {{ project.php_version }}</span>
                 {% endif %}
                 {% endif %}
                 &nbsp;|&nbsp;
@@ -95,9 +47,9 @@
                 {% elif scan.status == 'running' %}
                 <span class="badge badge-yellow">扫描中...</span>
                 {% elif scan.status == 'analyzing' %}
-                <span class="badge" style="background:var(--blue);color:#111">🤖 AI分析中</span>
+                <span class="badge" style="background:var(--blue);color:var(--badge-text)">AI分析中</span>
                 {% elif scan.status == 'verifying' %}
-                <span class="badge" style="background:var(--mauve);color:#111">🔍 MCP验证+修复中</span>
+                <span class="badge" style="background:var(--violet);color:var(--badge-text)">MCP验证+修复中</span>
                 {% elif scan.status == 'failed' %}
                 <span class="badge badge-red">失败</span>
                 {% else %}
@@ -111,8 +63,8 @@
         {% if scan.status == 'failed' %}
         <!-- ========== 扫描失败 ========== -->
         <div class="safe-result">
-            <div class="safe-hero" style="border-color: rgba(243, 139, 168, 0.4);">
-                <div class="safe-icon">💥</div>
+            <div class="safe-hero" style="border-color: var(--glow-rose);">
+                <div class="safe-icon" style="background:rgba(248,113,113,0.12);color:var(--red);">!</div>
                 <h2 style="color: var(--red);">扫描失败</h2>
                 <p class="safe-subtitle">
                     扫描过程中发生了错误，未能完成分析。请检查项目文件是否完整、语言选择是否正确，然后重新扫描。
@@ -130,22 +82,22 @@
                     <div class="safe-stat-label">已扫描</div>
                 </div>
                 <div class="safe-stat">
-                    <div class="safe-stat-num" style="color: var(--red);">✕</div>
+                    <div class="safe-stat-num" style="color: var(--red);">--</div>
                     <div class="safe-stat-label">状态</div>
                 </div>
             </div>
 
             <!-- 时间信息 -->
-            <div class="safe-pipeline" style="border-color: rgba(243, 139, 168, 0.2);">
+            <div class="safe-pipeline" style="border-color: var(--glow-rose);">
                 <h3>扫描时间线</h3>
                 <div class="fail-timeline">
                     <div class="fail-step">
-                        <span class="fail-step-icon">🕐</span>
+                        <span class="fail-step-icon">&#9702;</span>
                         <span class="fail-step-label">开始时间</span>
                         <span class="fail-step-value">{{ scan.started_at.strftime('%Y-%m-%d %H:%M:%S') if scan.started_at else '-' }}</span>
                     </div>
                     <div class="fail-step">
-                        <span class="fail-step-icon">💥</span>
+                        <span class="fail-step-icon">&#10007;</span>
                         <span class="fail-step-label">失败时间</span>
                         <span class="fail-step-value">{{ scan.finished_at.strftime('%Y-%m-%d %H:%M:%S') if scan.finished_at else '-' }}</span>
                     </div>
@@ -153,8 +105,8 @@
             </div>
 
             <!-- 排查建议 -->
-            <div class="safe-note" style="background: rgba(243, 139, 168, 0.08); border-color: rgba(243, 139, 168, 0.2);">
-                <p>🔧 <strong>可能的原因：</strong></p>
+            <div class="safe-note" style="background: var(--glow-rose); border-color: var(--glow-rose);">
+                <p><strong>可能的原因：</strong></p>
                 <ul>
                     <li>压缩包内文件编码异常或包含二进制文件</li>
                     <li>选择的编程语言与实际源码不符</li>
@@ -172,8 +124,8 @@
         {% elif scan.status == 'analyzing' %}
         <!-- AI 分析中 -->
         <div class="safe-result">
-            <div class="safe-hero" style="border-color: rgba(137, 180, 250, 0.4);">
-                <div class="safe-icon">🤖</div>
+            <div class="safe-hero" style="border-color: var(--glow-blue);">
+                <div class="safe-icon" style="background:rgba(56,189,248,0.12);color:var(--blue);">AI</div>
                 <h2 style="color: var(--blue);">AI 深度分析中...</h2>
                 <p class="safe-subtitle">正在逐个分析漏洞的形成原因、攻击方式和修复建议，请稍候</p>
             </div>
@@ -201,9 +153,9 @@
         {% elif scan.status == 'verifying' %}
         <!-- MCP 工具验证 + 修复中 -->
         <div class="safe-result">
-            <div class="safe-hero" style="border-color: rgba(203, 166, 247, 0.4);">
-                <div class="safe-icon">🔍</div>
-                <h2 style="color: var(--mauve);">MCP 验证 + 修复中...</h2>
+            <div class="safe-hero" style="border-color: var(--glow-violet);">
+                <div class="safe-icon" style="background:rgba(56,189,248,0.12);color:var(--blue);">M</div>
+                <h2 style="color: var(--blue);">MCP 验证 + 修复中...</h2>
                 <p class="safe-subtitle">AI 正在使用工具探索源码、验证漏洞并自动修复，请稍候</p>
             </div>
             <div class="safe-stats">
@@ -212,7 +164,7 @@
                     <div class="safe-stat-label">待验证漏洞</div>
                 </div>
                 <div class="safe-stat">
-                    <div class="safe-stat-num" style="color: var(--mauve);">🔧</div>
+                    <div class="safe-stat-num" style="color: var(--blue);">...</div>
                     <div class="safe-stat-label">修复中</div>
                 </div>
                 <div class="safe-stat">
@@ -227,7 +179,7 @@
         <!-- 扫描进行中：每 3 秒刷新一次，直到后台完成 -->
         <div class="safe-result">
             <div class="safe-hero">
-                <div class="safe-icon">⏳</div>
+                <div class="safe-icon" style="background:rgba(250,204,21,0.12);color:var(--yellow);">...</div>
                 <h2>扫描正在进行中...</h2>
                 <p class="safe-subtitle">正在分析项目源码，请稍候...</p>
             </div>
@@ -255,7 +207,7 @@
         <!-- ========== 无漏洞：安全报告 ========== -->
         <div class="safe-result">
             <div class="safe-hero">
-                <div class="safe-icon">🛡️</div>
+                <div class="safe-icon" style="background:rgba(74,222,128,0.12);color:var(--green);">OK</div>
                 <h2>未检测到漏洞</h2>
                 <p class="safe-subtitle">该项目的全部源码已通过三级流水线安全分析，未发现已知漏洞模式</p>
             </div>
@@ -271,35 +223,8 @@
                     <div class="safe-stat-label">已完成分析</div>
                 </div>
                 <div class="safe-stat">
-                    <div class="safe-stat-num" style="color:#a6e3a1">0</div>
+                    <div class="safe-stat-num" style="color:var(--green)">0</div>
                     <div class="safe-stat-label">发现漏洞</div>
-                </div>
-            </div>
-
-            <!-- 分析阶段说明 -->
-            <div class="safe-pipeline">
-                <h3>三级流水线分析已通过</h3>
-                <div class="pipeline-stages">
-                    <div class="pipeline-stage done">
-                        <span class="stage-icon">🔍</span>
-                        <span class="stage-name">Stage 1</span>
-                        <span class="stage-desc">污点追踪分析</span>
-                        <span class="stage-check">✓</span>
-                    </div>
-                    <div class="pipeline-arrow">→</div>
-                    <div class="pipeline-stage done">
-                        <span class="stage-icon">📊</span>
-                        <span class="stage-name">Stage 2</span>
-                        <span class="stage-desc">数据流分析</span>
-                        <span class="stage-check">✓</span>
-                    </div>
-                    <div class="pipeline-arrow">→</div>
-                    <div class="pipeline-stage done">
-                        <span class="stage-icon">🧩</span>
-                        <span class="stage-name">Stage 3</span>
-                        <span class="stage-desc">AST 模式分析</span>
-                        <span class="stage-check">✓</span>
-                    </div>
                 </div>
             </div>
 
@@ -313,13 +238,13 @@
                 <div class="file-list">
                     {% for f in scanned_files %}
                     <div class="file-item">
-                        <span class="file-icon">📄</span>
+                        <span class="file-icon">&#9632;</span>
                         <code class="file-path">{{ f }}</code>
                     </div>
                     {% endfor %}
                     {% if scanned_files|length >= 200 %}
                     <div class="file-item file-more">
-                        <span class="file-icon">📁</span>
+                        <span class="file-icon">&#9632;</span>
                         <span class="file-path">... 还有更多文件</span>
                     </div>
                     {% endif %}
@@ -328,14 +253,14 @@
             {% endif %}
 
             <div class="safe-note">
-                <p>💡 <strong>提示：</strong>未检测到漏洞不代表绝对安全。</p>
+                <p><strong>提示：</strong>未检测到漏洞不代表绝对安全。</p>
                 <ul>
                     <li>四级流水线分析覆盖了常见的 Source-Sink 模式和危险函数调用</li>
                     <li>建议结合人工代码审查和渗透测试进行更全面的安全评估</li>
                     <li>可使用 AI 设置页面配置大模型进行深度代码逻辑分析</li>
                 </ul>
                 <p style="margin-top: 16px;">
-                    <button class="btn btn-primary" onclick="retryScan(event)">🔄 重新扫描</button>
+                    <button class="btn btn-primary" onclick="retryScan(event)">重新扫描</button>
                 </p>
             </div>
         </div>
@@ -353,25 +278,25 @@
         {% set fixed_count = vulns|selectattr('ai_fix_code', 'ne', None)|selectattr('ai_fix_code', 'ne', '')|list|length %}
 
         <div class="stats">
-            <div class="stat"><div class="num critical">{{ critical_count }}</div><div class="label">🔴 Critical</div></div>
-            <div class="stat"><div class="num high">{{ high_count }}</div><div class="label">🟠 High</div></div>
-            <div class="stat"><div class="num medium">{{ medium_count }}</div><div class="label">🟡 Medium</div></div>
-            <div class="stat"><div class="num low">{{ low_count }}</div><div class="label">🟢 Low</div></div>
+            <div class="stat"><div class="num critical">{{ critical_count }}</div><div class="label">Critical</div></div>
+            <div class="stat"><div class="num high">{{ high_count }}</div><div class="label">High</div></div>
+            <div class="stat"><div class="num medium">{{ medium_count }}</div><div class="label">Medium</div></div>
+            <div class="stat"><div class="num low">{{ low_count }}</div><div class="label">Low</div></div>
             <div class="stat"><div class="num">{{ vulns|length }}</div><div class="label">总计</div></div>
-            <div class="stat"><div class="num" style="color:#a6e3a1">{{ confirmed_count }}</div><div class="label">AI确认漏洞</div></div>
-            <div class="stat"><div class="num" style="color:#f9e2af">{{ uncertain_count }}</div><div class="label">AI不确定</div></div>
+            <div class="stat"><div class="num" style="color:var(--green)">{{ confirmed_count }}</div><div class="label">AI确认漏洞</div></div>
+            <div class="stat"><div class="num" style="color:var(--yellow)">{{ uncertain_count }}</div><div class="label">AI不确定</div></div>
             {% if fixed_count > 0 %}
-            <div class="stat"><div class="num" style="color:#89b4fa">{{ fixed_count }}</div><div class="label">🔧 AI已修复</div></div>
+            <div class="stat"><div class="num" style="color:var(--blue)">{{ fixed_count }}</div><div class="label">AI已修复</div></div>
             {% endif %}
         </div>
 
         <!-- 操作按钮行 -->
         <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;">
-            <button class="btn btn-primary" id="analyze-all-btn" onclick="analyzeAll()">🤖 一键 AI 分析</button>
-            <button class="btn" onclick="retryScan(event)">🔄 重新扫描</button>
-            <a href="/settings" class="btn">⚙ AI 设置</a>
-            <label style="display:flex;align-items:center;gap:4px;font-size:0.85em;color:#a6adc8;cursor:pointer;margin-left:8px;">
-                <input type="checkbox" id="auto-ai-rescan" style="accent-color:#89b4fa;">
+            <button class="btn btn-primary" id="analyze-all-btn" onclick="analyzeAll()">一键 AI 分析</button>
+            <button class="btn" onclick="retryScan(event)">重新扫描</button>
+            <a href="/settings" class="btn">AI 设置</a>
+            <label style="display:flex;align-items:center;gap:4px;font-size:0.85em;color:var(--subtext);cursor:pointer;margin-left:8px;">
+                <input type="checkbox" id="auto-ai-rescan" style="accent-color:var(--blue);">
                 重扫后自动 AI 分析
             </label>
             <div id="analyze-progress-bar" style="display:none;flex:1;margin-left:8px;">
@@ -404,7 +329,7 @@
                 <option value="low">Low</option>
             </select>
             <input type="text" id="filter-file" placeholder="搜索文件名..." oninput="applyFilters()">
-            <button class="btn btn-sm" id="sort-by-ai-btn" title="按 AI 分析结果排序：确认漏洞排最前">🤖 分类排序</button>
+            <button class="btn btn-sm" id="sort-by-ai-btn" title="按 AI 分析结果排序：确认漏洞排最前">分类排序</button>
         </div>
 
         <!-- ========== 漏洞列表 ========== -->
@@ -431,8 +356,8 @@
                         <span class="badge badge-{{ v.severity }}">{{ v.severity.upper() }}</span>
                         <!-- AI 分析结果标记（如果已分析） -->
                         {% if v.ai_is_vulnerable and v.ai_is_vulnerable in ('true','false','uncertain') %}
-                        <span class="badge" style="background:#45475a">
-                            🤖 {{ {'true':'确认漏洞','false':'误报','uncertain':'不确定'}[v.ai_is_vulnerable] }}
+                        <span class="badge" style="background:var(--surface)">
+                            {{ {'true':'确认漏洞','false':'误报','uncertain':'不确定'}[v.ai_is_vulnerable] }}
                         </span>
                         {% endif %}
                     </div>
@@ -440,17 +365,17 @@
                         <!-- 文件路径 : 行号 -->
                         <span>{{ v.file_path }} : {{ v.line_number }}</span>
                         {% if v.source_file and v.source_file != v.file_path %}
-                        <span style="font-size:0.8em;color:#f9e2af;">⟶ Source: {{ v.source_file }}:{{ v.source_line }}</span>
+                        <span style="font-size:0.8em;color:var(--yellow);">⟶ Source: {{ v.source_file }}:{{ v.source_line }}</span>
                         {% endif %}
                         <!-- AI 分析按钮（已分析则禁用） -->
                         <button class="btn btn-sm" onclick="analyzeVuln({{ v.id }})">
-                            🤖 AI 分析
+                            AI 分析
                         </button>
                         <!-- 人工审核状态下拉框 -->
-                        <select onchange="updateStatus({{ v.id }}, this.value)" style="padding:2px 6px;font-size:0.8em;border-radius:4px;background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;">
+                        <select onchange="updateStatus({{ v.id }}, this.value)" style="padding:2px 6px;font-size:0.8em;border-radius:4px;background:var(--bg);color:var(--text);border:1px solid var(--overlay);">
                             <option value="pending" {% if v.status == 'pending' %}selected{% endif %}>待处理</option>
                             <option value="confirmed" {% if v.status == 'confirmed' %}selected{% endif %}>已确认</option>
-                            <option value="fixed" {% if v.status == 'fixed' or (v.ai_fix_code and v.ai_fix_code|length > 0) %}selected{% endif %}>🔧 AI已修复</option>
+                            <option value="fixed" {% if v.status == 'fixed' or (v.ai_fix_code and v.ai_fix_code|length > 0) %}selected{% endif %}>AI已修复</option>
                             <option value="potential" {% if v.status == 'potential' %}selected{% endif %}>潜在</option>
                             <option value="false_positive" {% if v.status == 'false_positive' %}selected{% endif %}>误报</option>
                             <option value="reviewed" {% if v.status == 'reviewed' %}selected{% endif %}>已审查</option>
@@ -462,22 +387,22 @@
                 {% if v.source_code or v.sink_code or v.data_flow %}
                 <div class="vuln-code">
                     {% if v.source_code %}
-                    <span class="marker" style="color:#f38ba8;">▼ SOURCE</span>
-                    <span style="color:#a6adc8;font-size:0.8em;">{{ v.source_file or v.file_path }}{% if v.source_line %}:{{ v.source_line }}{% endif %}{% if v.source_func %} ({{ v.source_func }}){% endif %}</span>
+                    <span class="marker" style="color:var(--red);">▼ SOURCE</span>
+                    <span style="color:var(--subtext);font-size:0.8em;">{{ v.source_file or v.file_path }}{% if v.source_line %}:{{ v.source_line }}{% endif %}{% if v.source_func %} ({{ v.source_func }}){% endif %}</span>
 {{ v.source_code }}
                     {% endif %}
                     {% if v.data_flow %}
-                    <span class="marker" style="color:#f9e2af;">→ 传播路径</span>
-                    <span style="color:#cdd6f4;">{{ v.data_flow }}</span>
+                    <span class="marker" style="color:var(--yellow);">→ 传播路径</span>
+                    <span style="color:var(--text);">{{ v.data_flow }}</span>
                     {% endif %}
                     {% if v.sink_code %}
-                    <span class="marker" style="color:#fab387;">▼ SINK</span>
-                    <span style="color:#a6adc8;font-size:0.8em;">{{ v.file_path }}:{{ v.line_number }}{% if v.sink_func %} ({{ v.sink_func }}){% endif %}</span>
+                    <span class="marker" style="color:var(--peach);">▼ SINK</span>
+                    <span style="color:var(--subtext);font-size:0.8em;">{{ v.file_path }}:{{ v.line_number }}{% if v.sink_func %} ({{ v.sink_func }}){% endif %}</span>
 {{ v.sink_code }}
                     {% endif %}
                 </div>
                 {% elif v.description %}
-                <div class="vuln-code" style="color:#a6adc8;">
+                <div class="vuln-code" style="color:var(--subtext);">
                     {{ v.description }}
                 </div>
                 {% endif %}
@@ -494,8 +419,8 @@
                         <summary><strong>形成原因</strong></summary>
                         {% if rc and rc.summary %}
                         <p>{{ rc.summary }}</p>
-                        <p style="color:#a6adc8;font-size:0.9em;">{{ rc.detail }}</p>
-                        {% if rc.problem_line %}<p><code style="background:#45475a">{{ rc.problem_line }}</code></p>{% endif %}
+                        <p style="color:var(--subtext);font-size:0.9em;">{{ rc.detail }}</p>
+                        {% if rc.problem_line %}<p><code style="background:var(--surface)">{{ rc.problem_line }}</code></p>{% endif %}
                         {% else %}
                         <pre style="white-space:pre-wrap;font-size:0.9em;">{{ v.ai_root_cause }}</pre>
                         {% endif %}
@@ -507,22 +432,22 @@
                     <details>
                         <summary><strong>攻击方式分析</strong></summary>
                         {% if atk and atk.discovery_method %}
-                        <p style="color:#a6adc8;font-size:0.9em;">{{ atk.discovery_method }}</p>
+                        <p style="color:var(--subtext);font-size:0.9em;">{{ atk.discovery_method }}</p>
                         {% endif %}
                         {% if atk and atk.attack_scenarios %}
                         <div style="margin-top:8px;">
                             {% for s in atk.attack_scenarios %}
-                            <div style="background:#181825;border-radius:6px;padding:10px;margin-bottom:8px;border-left:3px solid #fab387;">
+                            <div style="background:var(--bg2);border-radius:6px;padding:10px;margin-bottom:8px;border-left:3px solid var(--peach);">
                                 <strong>{{ s.name }}</strong>
                                 <span class="badge" style="margin-left:8px;font-size:0.7em;">{{ s.difficulty }}</span>
                                 <pre class="fix-code" style="margin-top:4px;">{{ s.payload }}</pre>
-                                <small style="color:#a6adc8;">{{ s.expected_effect }}</small>
+                                <small style="color:var(--subtext);">{{ s.expected_effect }}</small>
                             </div>
                             {% endfor %}
                         </div>
                         {% endif %}
                         {% if atk and atk.waf_bypass %}
-                        <p style="color:#f9e2af;font-size:0.85em;margin-top:4px;">🛡 WAF 绕过: {{ atk.waf_bypass }}</p>
+                        <p style="color:var(--yellow);font-size:0.85em;margin-top:4px;">WAF 绕过: {{ atk.waf_bypass }}</p>
                         {% endif %}
                         {% if not atk %}
                         <pre style="white-space:pre-wrap;font-size:0.9em;">{{ v.ai_attack_vector }}</pre>
@@ -536,7 +461,7 @@
                         <summary><strong>修复建议</strong></summary>
                         {% if fix and fix.primary %}
                         <p><strong>{{ fix.primary.approach }}</strong></p>
-                        <p style="color:#a6adc8;font-size:0.9em;">{{ fix.primary.description }}</p>
+                        <p style="color:var(--subtext);font-size:0.9em;">{{ fix.primary.description }}</p>
                         {% if fix.primary.code %}
                         <pre class="fix-code">{{ fix.primary.code }}</pre>
                         {% endif %}
@@ -547,7 +472,7 @@
                         {% endfor %}
                         {% endif %}
                         {% if fix.security_notes %}
-                        <p style="color:#f9e2af;font-size:0.85em;">{{ fix.security_notes }}</p>
+                        <p style="color:var(--yellow);font-size:0.85em;">{{ fix.security_notes }}</p>
                         {% endif %}
                         {% else %}
                         <pre style="white-space:pre-wrap;font-size:0.9em;">{{ v.ai_fix_suggestion }}</pre>
@@ -564,13 +489,13 @@
                     <!-- MCP 工具验证结果 -->
                     {% if v.ai_payload and v.ai_payload|length > 0 %}
                     <details>
-                        <summary><strong>🔍 MCP 验证结果</strong>
+                        <summary><strong>MCP 验证结果</strong>
                             {% if v.ai_payload_result == 'success' %}
-                            <span class="badge badge-green" style="margin-left:6px;">✅ 通过</span>
+                            <span class="badge badge-green" style="margin-left:6px;">通过</span>
                             {% elif v.ai_payload_result == 'failed' %}
-                            <span class="badge" style="margin-left:6px;background:#f38ba8;">❌ 未通过</span>
+                            <span class="badge badge-red" style="margin-left:6px;">未通过</span>
                             {% elif v.ai_payload_result == 'uncertain' %}
-                            <span class="badge" style="margin-left:6px;background:var(--yellow);">❓ 不确定</span>
+                            <span class="badge badge-yellow" style="margin-left:6px;">不确定</span>
                             {% endif %}
                         </summary>
                         {% if v.ai_payload %}
@@ -579,7 +504,7 @@
                         {% endif %}
                         {% if v.ai_payload_evidence %}
                         <p style="margin-top:6px;"><strong>验证证据:</strong></p>
-                        <p style="color:#a6adc8;font-size:0.85em;">{{ v.ai_payload_evidence }}</p>
+                        <p style="color:var(--subtext);font-size:0.85em;">{{ v.ai_payload_evidence }}</p>
                         {% endif %}
                     </details>
                     {% endif %}
@@ -587,16 +512,16 @@
                     <!-- AI 自动修复确认 -->
                     {% if v.ai_fix_code and v.ai_fix_code|length > 0 %}
                     <details open>
-                        <summary><strong>🔧 AI 自动修复</strong>
-                            <span class="badge" style="margin-left:6px;background:var(--blue);color:#111;">已应用</span>
+                        <summary><strong>AI 自动修复</strong>
+                            <span class="badge" style="margin-left:6px;background:var(--blue);color:var(--badge-text);">已应用</span>
                         </summary>
-                        <div style="background:#1a1b26;border-left:3px solid var(--blue);padding:8px 12px;margin-top:6px;border-radius:0 6px 6px 0;">
-                            <p style="color:#89b4fa;font-size:0.85em;">
-                                🤖 AI 已通过 MCP 工具直接修改源文件，应用了以下修复：
+                        <div style="background:var(--bg2);border-left:3px solid var(--blue);padding:8px 12px;margin-top:6px;border-radius:0 6px 6px 0;">
+                            <p style="color:var(--blue);font-size:0.85em;">
+                                AI 已通过 MCP 工具直接修改源文件，应用了以下修复：
                             </p>
                             <pre class="fix-code">{{ v.ai_fix_code }}</pre>
-                            <p style="color:#a6e3a1;font-size:0.8em;margin-top:4px;">
-                                📁 原文件已备份为 .bak，可在项目目录中查看
+                            <p style="color:var(--green);font-size:0.8em;margin-top:4px;">
+                                原文件已备份为 .bak，可在项目目录中查看
                             </p>
                         </div>
                     </details>
@@ -611,6 +536,29 @@
     </main>
 
     <script>
+        // === 主题切换 ===
+        (function() {
+            const saved = localStorage.getItem('theme');
+            if (saved) {
+                if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+                else document.documentElement.removeAttribute('data-theme');
+            } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+                document.documentElement.setAttribute('data-theme', 'light');
+            }
+            window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e) {
+                if (!localStorage.getItem('theme')) {
+                    if (e.matches) document.documentElement.setAttribute('data-theme', 'light');
+                    else document.documentElement.removeAttribute('data-theme');
+                }
+            });
+        })();
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme');
+            const next = current === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', next);
+            localStorage.setItem('theme', next);
+        }
+
         // 漏洞类型中文标签映射（用于筛选器选项值匹配）
         const TYPE_LABELS = {
             'sql_injection': 'SQL 注入',
@@ -651,7 +599,7 @@
                         alert('AI 分析失败: ' + (err.error || '未知错误'));
                     }
                     btn.disabled = false;
-                    btn.textContent = '🤖 AI 分析';
+                    btn.textContent = 'AI 分析';
                 }
             } catch (e) {
                 if (e.name === 'AbortError') {
@@ -660,7 +608,7 @@
                     alert('网络错误: ' + e.message);
                 }
                 btn.disabled = false;
-                btn.textContent = '🤖 AI 分析';
+                btn.textContent = 'AI 分析';
             }
         }
 
@@ -719,10 +667,7 @@
             }
         }
 
-        // 扫描中时每 5 秒自动刷新页面
-        {% if scan.status == 'running' %}
-        setInterval(() => location.reload(), 5000);
-        {% endif %}
+
 
         /**
          * 一键 AI 分析 — 逐个分析 + 实时进度条
@@ -773,9 +718,9 @@
                     } else {
                         const err = await resp.json();
                         if (err.error === 'AI 未配置') {
-                            alert('⚠️ AI 尚未配置\n\n请先前往设置页面配置：\n1. API Key\n2. Base URL\n3. 模型名称');
+                            alert('AI 尚未配置\n\n请先前往设置页面配置：\n1. API Key\n2. Base URL\n3. 模型名称');
                             btn.disabled = false;
-                            btn.textContent = '🤖 一键 AI 分析';
+                            btn.textContent = '一键 AI 分析';
                             bar.style.display = 'none';
                             return;
                         }
