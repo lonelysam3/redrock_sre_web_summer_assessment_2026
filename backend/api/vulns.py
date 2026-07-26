@@ -317,6 +317,7 @@ def analyze_all_vulns():
                     "source_code": v.source_code or "",
                     "sink_code": v.sink_code or "",
                     "data_flow": v.data_flow or "",
+                })
             source_code_map = {}
             for v in analyzed_vulns:
                 if v.file_path and v.file_path not in source_code_map:

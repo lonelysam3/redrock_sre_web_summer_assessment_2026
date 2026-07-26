@@ -46,10 +46,20 @@
                 <!-- 开始扫描按钮，触发异步扫描 + 轮询 -->
                 <button class="btn btn-primary" id="start-scan-btn" onclick="startScan()">开始扫描</button>
             </div>
-            <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;margin-top:10px;">
-                <input type="checkbox" id="auto-ai-checkbox" style="accent-color:var(--blue);">
-                扫描后自动 AI 分析
-            </label>
+            <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;">
+                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
+                    <input type="checkbox" id="auto-ai-checkbox" style="accent-color:var(--blue);">
+                    AI 分析
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
+                    <input type="checkbox" id="auto-verify-checkbox" style="accent-color:var(--violet);">
+                    Payload 验证
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
+                    <input type="checkbox" id="auto-fix-checkbox" style="accent-color:var(--teal);">
+                    AI 修复
+                </label>
+            </div>
         </div>
 
         <!-- ========== 扫描历史列表 ========== -->
@@ -141,13 +151,17 @@
             btn.disabled = true;
             btn.textContent = '扫描中...';
             var autoAI = document.getElementById('auto-ai-checkbox');
+            var autoVerify = document.getElementById('auto-verify-checkbox');
+            var autoFix = document.getElementById('auto-fix-checkbox');
             var autoAiChecked = autoAI ? autoAI.checked : false;
+            var autoVerifyChecked = autoVerify ? autoVerify.checked : false;
+            var autoFixChecked = autoFix ? autoFix.checked : false;
 
             // 触发扫描
             var resp = await fetch('/project/{{ project.id }}/new-scan', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({auto_ai: autoAiChecked})
+                body: JSON.stringify({auto_ai: autoAiChecked, auto_verify: autoVerifyChecked, auto_fix: autoFixChecked})
             });
             if (resp.ok) {
                 var data = await resp.json();

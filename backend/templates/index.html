@@ -59,11 +59,21 @@
                 </select>
                 <button type="submit" class="btn btn-primary">上传并扫描</button>
             </form>
-            <!-- AI 自动分析开关 -->
-            <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;margin-top:10px;">
-                <input type="checkbox" id="auto-ai-checkbox" checked style="accent-color:var(--blue);">
-                扫描后自动 AI 分析
-            </label>
+            <!-- AI 功能开关 -->
+            <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;">
+                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
+                    <input type="checkbox" id="auto-ai-checkbox" checked style="accent-color:var(--blue);">
+                    AI 分析
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
+                    <input type="checkbox" id="auto-verify-checkbox" style="accent-color:var(--violet);">
+                    Payload 验证
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
+                    <input type="checkbox" id="auto-fix-checkbox" style="accent-color:var(--teal);">
+                    AI 修复
+                </label>
+            </div>
             <!-- 上传进度提示 -->
             <div id="upload-status" class="upload-status" style="display:none;"></div>
         </section>
@@ -185,8 +195,9 @@
 
             const formData = new FormData(uploadForm);
             formData.set('auto_scan', 'true');
-            // 同步外部复选框
             formData.set('auto_ai', document.getElementById('auto-ai-checkbox').checked ? '1' : '0');
+            formData.set('auto_verify', document.getElementById('auto-verify-checkbox').checked ? '1' : '0');
+            formData.set('auto_fix', document.getElementById('auto-fix-checkbox').checked ? '1' : '0');
 
             try {
                 const resp = await fetch('/api/projects/upload', {
@@ -235,11 +246,15 @@
          */
         async function rescanProject(id, name) {
             var autoAI = document.getElementById('auto-ai-checkbox');
+            var autoVerify = document.getElementById('auto-verify-checkbox');
+            var autoFix = document.getElementById('auto-fix-checkbox');
             var autoAiChecked = autoAI ? autoAI.checked : false;
+            var autoVerifyChecked = autoVerify ? autoVerify.checked : false;
+            var autoFixChecked = autoFix ? autoFix.checked : false;
             var resp = await fetch('/project/' + id + '/new-scan', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({auto_ai: autoAiChecked})
+                body: JSON.stringify({auto_ai: autoAiChecked, auto_verify: autoVerifyChecked, auto_fix: autoFixChecked})
             });
             if (resp.ok) {
                 const data = await resp.json();

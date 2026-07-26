@@ -245,7 +245,10 @@ def create_app() -> Flask:
         触发新扫描（API 端点，前端 JS 调用）。
 
         请求体 JSON（可选）:
-            { "auto_ai": true }  — 扫描后自动 AI 分析
+            { "auto_ai": true, "auto_verify": false, "auto_fix": false }
+              — auto_ai: 扫描后自动 AI 深度分析
+              — auto_verify: AI 分析后自动构建 Payload 验证
+              — auto_fix: 验证确认后自动修复代码
 
         返回:
             JSON: { scan_id, status: "running" }
@@ -254,17 +257,20 @@ def create_app() -> Flask:
         if not project:
             return jsonify({"error": "项目不存在"}), 404
 
-        auto_ai = False
-        try:
-            data = request.get_json(silent=True) or {}
-            auto_ai = data.get("auto_ai", False)
-        except Exception:
-            pass
-        # 兜底：也支持 query string 和 form data
-        if not auto_ai:
-            auto_ai = request.args.get("auto_ai", "").lower() in ("1", "true")
-        if not auto_ai:
-            auto_ai = request.form.get("auto_ai", "").lower() in ("1", "true")
+        def _parse_bool(key):
+            val = False
+            if data:
+                val = data.get(key, False)
+            if not val:
+                val = request.args.get(key, "").lower() in ("1", "true")
+            if not val:
+                val = request.form.get(key, "").lower() in ("1", "true")
+            return val
+
+        data = request.get_json(silent=True) or {}
+        auto_ai = _parse_bool("auto_ai")
+        auto_verify = _parse_bool("auto_verify")
+        auto_fix = _parse_bool("auto_fix")
 
         # 创建扫描任务记录
         scan = ScanTask(
@@ -278,7 +284,7 @@ def create_app() -> Flask:
         # 启动后台线程
         thread = threading.Thread(
             target=_run_scan_background,
-            args=(app, scan.id, project.repo_path, project.language, auto_ai),
+            args=(app, scan.id, project.repo_path, project.language, auto_ai, auto_verify, auto_fix),
             daemon=True,
         )
         thread.start()
@@ -489,7 +495,7 @@ def _commit_with_retry(db_session, label: str = "", max_retries: int = 5, delay:
                 raise
 
 
-def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: str, auto_ai: bool = False):
+def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: str, auto_ai: bool = False, auto_verify: bool = False, auto_fix: bool = False):
     """
     后台线程：执行代码扫描（v2 — 四级流水线 + AI 自动验证）。
 
@@ -592,28 +598,45 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
             except Exception as e2:
                 print(f"[ERROR] 无法更新扫描状态: {e2}")
 
-    # ---- 扫描完成后自动触发 AI 深度分析 ----
-    if auto_ai:
-        print(f"[SCAN] auto_ai=True, starting AI analysis check...")
+    # ---- AI 流水线（三个独立开关）----
+    any_ai = auto_ai or auto_verify or auto_fix
+    if any_ai:
+        print(f"[SCAN] AI flags: analysis={auto_ai}, verify={auto_verify}, fix={auto_fix}")
         with app.app_context():
             try:
                 client = get_ai_client()
                 print(f"[SCAN] AI client: key={'***' if client.api_key else 'EMPTY'}, url={client.base_url}, model={client.model}, configured={client.is_configured()}")
                 s = db.session.get(ScanTask, scan_id)
                 if client.is_configured() and s and s.vulns_found > 0:
-                    if s.status == "done":
-                        s.status = "analyzing"
-                        db.session.commit()
+                    # 阶段 1: AI 深度分析
+                    s.status = "analyzing"
+                    db.session.commit()
                     analyzed, total = _run_ai_analysis_on_vulns(scan_id, project_path, client, sys.stderr)
                     s = db.session.get(ScanTask, scan_id)
+
+                    # 阶段 2: Payload 构建 + 验证
+                    if auto_verify or auto_fix:
+                        if s:
+                            s.status = "verifying"
+                            db.session.commit()
+                        print(f"[SCAN] starting AI verification of {total} vulns...")
+                        try:
+                            from engine.ai_verifier import AIVerifier, VerificationResult
+                            verified, vt = _run_ai_verification_on_vulns(scan_id, project_path, client, sys.stderr)
+                            print(f"[SCAN] AI verification done: {verified}/{vt} confirmed")
+                        except Exception as ve:
+                            import traceback
+                            print(f"[ERROR] AI verification failed: {ve}")
+                            traceback.print_exc()
+
                     if s:
                         s.status = "done"
                         db.session.commit()
                 else:
-                    print("[INFO] AI 未配置，跳过 AI 深度分析")
+                    print("[INFO] AI 未配置或无漏洞，跳过 AI 流水线")
             except Exception as e:
                 import traceback
-                print(f"[ERROR] AI 深度分析失败: {e}")
+                print(f"[ERROR] AI 流水线失败: {e}")
                 traceback.print_exc()
 
 
@@ -978,7 +1001,7 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log):
     return verified, len(vulns)
 
 
-def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto_ai: bool = False):
+def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto_ai: bool = False, auto_verify: bool = False, auto_fix: bool = False):
     """后台线程中执行扫描。"""
     import traceback, sys as _sys
 
@@ -1041,34 +1064,38 @@ def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto
             _sys.stderr.write(f"[SCAN] committed {n} vulns\n")
             _sys.stderr.flush()
 
-            # ---- 自动触发 AI 深度分析（如果用户选择开启）----
-            if auto_ai:
+            # ---- AI 流水线（三个独立开关）----
+            any_ai = auto_ai or auto_verify or auto_fix
+            if any_ai:
                 ai_client = get_ai_client()
                 if ai_client.is_configured() and n > 0:
-                    scan.status = "analyzing"
-                    db.session.commit()
-                    _sys.stderr.write(f"[SCAN] starting AI analysis of {n} vulns...\n")
-                    _sys.stderr.flush()
-                    analyzed, total = _run_ai_analysis_on_vulns(scan_id, project_path, ai_client, _sys.stderr)
-                    if analyzed >= total:
-                        _sys.stderr.write(f"[SCAN] AI analysis complete ({analyzed}/{total})\n")
-                    else:
-                        _sys.stderr.write(f"[SCAN] AI analysis partial ({analyzed}/{total}), {total - analyzed} failed\n")
-                    db.session.commit()
-                    _sys.stderr.flush()
+                    # 阶段 1: AI 深度分析
+                    if auto_ai or auto_verify or auto_fix:
+                        scan.status = "analyzing"
+                        db.session.commit()
+                        _sys.stderr.write(f"[SCAN] starting AI analysis of {n} vulns...\n")
+                        _sys.stderr.flush()
+                        analyzed, total = _run_ai_analysis_on_vulns(scan_id, project_path, ai_client, _sys.stderr)
+                        if analyzed >= total:
+                            _sys.stderr.write(f"[SCAN] AI analysis complete ({analyzed}/{total})\n")
+                        else:
+                            _sys.stderr.write(f"[SCAN] AI analysis partial ({analyzed}/{total}), {total - analyzed} failed\n")
+                        db.session.commit()
+                        _sys.stderr.flush()
 
-                    # ---- 自动 Payload 构建 + 验证（AI 确认/不确定）----
-                    scan.status = "verifying"
-                    db.session.commit()
-                    _sys.stderr.write(f"[SCAN] starting AI verification of {total} vulns...\n")
-                    _sys.stderr.flush()
-                    try:
-                        verified, vt = _run_ai_verification_on_vulns(scan_id, project_path, ai_client, _sys.stderr)
-                        _sys.stderr.write(f"[SCAN] AI verification done: {verified}/{vt} confirmed\n")
-                    except Exception:
-                        traceback.print_exc(file=_sys.stderr)
-                        _sys.stderr.write("[SCAN] AI verification failed, continuing\n")
-                    _sys.stderr.flush()
+                    # 阶段 2: Payload 构建 + 验证
+                    if auto_verify or auto_fix:
+                        scan.status = "verifying"
+                        db.session.commit()
+                        _sys.stderr.write(f"[SCAN] starting AI verification of {n} vulns...\n")
+                        _sys.stderr.flush()
+                        try:
+                            verified, vt = _run_ai_verification_on_vulns(scan_id, project_path, ai_client, _sys.stderr)
+                            _sys.stderr.write(f"[SCAN] AI verification done: {verified}/{vt} confirmed\n")
+                        except Exception:
+                            traceback.print_exc(file=_sys.stderr)
+                            _sys.stderr.write("[SCAN] AI verification failed, continuing\n")
+                        _sys.stderr.flush()
 
                     scan.status = "done"
                     db.session.commit()

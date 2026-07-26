@@ -110,12 +110,6 @@ class PayloadBuilder:
                     description="双写绕过路径穿越"),
         ],
         "file_upload": [
-            # 静态 Payload 数据，仅用于扫描器生成测试向量，不执行任何系统命令
-            Payload("shell.php", param_name="filename", expected_result="文件上传成功",
-                    risk_level="medium", description="PHP 文件上传探测"),
-        ],
-        ],
-        "file_upload": [
             Payload("shell.php", param_name="filename", expected_result="文件上传成功",
                     risk_level="medium", description="PHP 文件上传探测"),
         ],
