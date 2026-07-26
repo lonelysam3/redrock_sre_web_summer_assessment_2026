@@ -66,6 +66,18 @@ def _migrate_db():
             db.session.execute(
                 text("ALTER TABLE projects ADD COLUMN php_version VARCHAR(20)")
             )
+        if "python_version" not in cols:
+            db.session.execute(
+                text("ALTER TABLE projects ADD COLUMN python_version VARCHAR(20)")
+            )
+        if "cpp_standard" not in cols:
+            db.session.execute(
+                text("ALTER TABLE projects ADD COLUMN cpp_standard VARCHAR(20)")
+            )
+        if "c_standard" not in cols:
+            db.session.execute(
+                text("ALTER TABLE projects ADD COLUMN c_standard VARCHAR(20)")
+            )
 
     # 为 vulnerabilities 表补充 AI 深度分析相关列（create_all 可能遗漏）
     if "vulnerabilities" in inspector.get_table_names():
@@ -521,7 +533,7 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
             ai_client = _get_client()
             user_php = getattr(scan.project, 'php_version', None) if scan.project else None
 
-            # 解析最终 PHP 版本：用户选择优先，否则自动检测
+            # 解析最终版本/标准：用户选择优先，否则自动检测
             if language == "php":
                 from engine.pipeline import AnalysisPipeline as _AP
                 _tmp_pipeline = _AP()
@@ -533,6 +545,38 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
                 if auto_detected and scan.project:
                     scan.project.php_version = f"auto({resolved_version})"
                     db.session.commit()
+            elif language == "python":
+                from engine.rule_engine import detect_python_version
+                user_py = getattr(scan.project, 'python_version', None) if scan.project else None
+                if user_py:
+                    effective_version = user_py
+                else:
+                    from engine.pipeline import AnalysisPipeline as _AP
+                    source_map = _AP()._collect_source_files(project_path, language)
+                    detected = detect_python_version(source_map)
+                    effective_version = detected
+                    if scan.project:
+                        scan.project.python_version = f"auto({detected})"
+                        db.session.commit()
+            elif language in ("c", "cpp"):
+                from engine.rule_engine import detect_c_version, detect_cpp_version
+                if language == "c":
+                    user_std = getattr(scan.project, 'c_standard', None) if scan.project else None
+                else:
+                    user_std = getattr(scan.project, 'cpp_standard', None) if scan.project else None
+                if user_std:
+                    effective_version = user_std
+                else:
+                    from engine.pipeline import AnalysisPipeline as _AP
+                    source_map = _AP()._collect_source_files(project_path, language)
+                    detected = detect_c_version(source_map) if language == "c" else detect_cpp_version(source_map)
+                    effective_version = detected
+                    if scan.project:
+                        if language == "c":
+                            scan.project.c_standard = f"auto({detected})"
+                        else:
+                            scan.project.cpp_standard = f"auto({detected})"
+                        db.session.commit()
             else:
                 effective_version = user_php
 
@@ -1031,6 +1075,38 @@ def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto
                 if auto_detected and scan.project:
                     scan.project.php_version = f"auto({resolved_version})"
                     db.session.commit()
+            elif language == "python":
+                from engine.rule_engine import detect_python_version
+                from engine.pipeline import AnalysisPipeline
+                user_py = getattr(scan.project, 'python_version', None) if scan.project else None
+                if user_py:
+                    effective_version = user_py
+                else:
+                    source_map = AnalysisPipeline()._collect_source_files(project_path, language)
+                    detected = detect_python_version(source_map)
+                    effective_version = detected
+                    if scan.project:
+                        scan.project.python_version = f"auto({detected})"
+                        db.session.commit()
+            elif language in ("c", "cpp"):
+                from engine.rule_engine import detect_c_version, detect_cpp_version
+                from engine.pipeline import AnalysisPipeline
+                if language == "c":
+                    user_std = getattr(scan.project, 'c_standard', None) if scan.project else None
+                else:
+                    user_std = getattr(scan.project, 'cpp_standard', None) if scan.project else None
+                if user_std:
+                    effective_version = user_std
+                else:
+                    source_map = AnalysisPipeline()._collect_source_files(project_path, language)
+                    detected = detect_c_version(source_map) if language == "c" else detect_cpp_version(source_map)
+                    effective_version = detected
+                    if scan.project:
+                        if language == "c":
+                            scan.project.c_standard = f"auto({detected})"
+                        else:
+                            scan.project.cpp_standard = f"auto({detected})"
+                        db.session.commit()
             else:
                 effective_version = user_php
 

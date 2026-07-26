@@ -39,7 +39,7 @@
                     <span id="file-name" class="file-name">未选择文件</span>
                 </div>
                 <!-- 编程语言（必选） -->
-                <select name="language" id="upload-language" required onchange="togglePhpVersion()">
+                <select name="language" id="upload-language" required onchange="toggleVersionSelect()">
                     <option value="">选择语言</option>
                     <option value="python">Python</option>
                     <option value="c">C</option>
@@ -57,22 +57,66 @@
                     <option value="7.4">PHP 7.4</option>
                     <option value="8.0">PHP 8.0+</option>
                 </select>
+                <!-- Python 版本选择 -->
+                <select name="python_version" id="upload-python-version" style="display:none;">
+                    <option value="">自动检测</option>
+                    <option value="2.7">Python 2.7</option>
+                    <option value="3.6">Python 3.6</option>
+                    <option value="3.7">Python 3.7</option>
+                    <option value="3.8">Python 3.8</option>
+                    <option value="3.9">Python 3.9</option>
+                    <option value="3.10">Python 3.10</option>
+                    <option value="3.11">Python 3.11</option>
+                    <option value="3.12">Python 3.12</option>
+                    <option value="3.13">Python 3.13</option>
+                </select>
+                <!-- C 标准选择 -->
+                <select name="c_standard" id="upload-c-standard" style="display:none;">
+                    <option value="">自动检测</option>
+                    <option value="c89">C89 (ANSI C)</option>
+                    <option value="c99">C99</option>
+                    <option value="c11">C11</option>
+                    <option value="c17">C17</option>
+                    <option value="c23">C23</option>
+                </select>
+                <!-- C++ 标准选择 -->
+                <select name="cpp_standard" id="upload-cpp-standard" style="display:none;">
+                    <option value="">自动检测</option>
+                    <option value="c++98">C++98</option>
+                    <option value="c++11">C++11</option>
+                    <option value="c++14">C++14</option>
+                    <option value="c++17">C++17</option>
+                    <option value="c++20">C++20</option>
+                    <option value="c++23">C++23</option>
+                </select>
                 <button type="submit" class="btn btn-primary">上传并扫描</button>
             </form>
             <!-- AI 功能开关 -->
-            <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;">
-                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
-                    <input type="checkbox" id="auto-ai-checkbox" checked style="accent-color:var(--blue);">
-                    AI 分析
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
-                    <input type="checkbox" id="auto-verify-checkbox" style="accent-color:var(--violet);">
-                    Payload 验证
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
-                    <input type="checkbox" id="auto-fix-checkbox" style="accent-color:var(--teal);">
-                    AI 修复
-                </label>
+            <div style="margin-top:10px;">
+                <p style="font-size:0.85em;color:var(--subtext);margin-bottom:8px;">扫描完成后自动执行（勾选即生效）：</p>
+                <div style="display:flex;gap:24px;flex-wrap:wrap;">
+                    <div>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--text);cursor:pointer;font-weight:600;">
+                            <input type="checkbox" id="auto-ai-checkbox" checked style="accent-color:var(--blue);">
+                            AI 分析
+                        </label>
+                        <p style="font-size:0.75em;color:var(--subtext);margin:2px 0 0 22px;">深度分析漏洞成因、攻击方式</p>
+                    </div>
+                    <div>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--text);cursor:pointer;font-weight:600;">
+                            <input type="checkbox" id="auto-verify-checkbox" style="accent-color:var(--violet);">
+                            Payload 验证
+                        </label>
+                        <p style="font-size:0.75em;color:var(--subtext);margin:2px 0 0 22px;">构建攻击 Payload，验证漏洞真实性</p>
+                    </div>
+                    <div>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--text);cursor:pointer;font-weight:600;">
+                            <input type="checkbox" id="auto-fix-checkbox" style="accent-color:var(--teal);">
+                            AI 修复
+                        </label>
+                        <p style="font-size:0.75em;color:var(--subtext);margin:2px 0 0 22px;">自动生成修复代码（不修改源文件）</p>
+                    </div>
+                </div>
             </div>
             <!-- 上传进度提示 -->
             <div id="upload-status" class="upload-status" style="display:none;"></div>
@@ -166,11 +210,14 @@
             }
         });
 
-        /** 切换 PHP 版本选择器可见性 */
-        function togglePhpVersion() {
+        /** 切换版本/标准选择器可见性 */
+        function toggleVersionSelect() {
             const lang = document.getElementById('upload-language');
-            const pv = document.getElementById('upload-php-version');
-            pv.style.display = (lang.value === 'php') ? '' : 'none';
+            const val = lang.value;
+            document.getElementById('upload-php-version').style.display = (val === 'php') ? '' : 'none';
+            document.getElementById('upload-python-version').style.display = (val === 'python') ? '' : 'none';
+            document.getElementById('upload-c-standard').style.display = (val === 'c') ? '' : 'none';
+            document.getElementById('upload-cpp-standard').style.display = (val === 'cpp') ? '' : 'none';
         }
 
         uploadForm.addEventListener('submit', async (e) => {
@@ -209,12 +256,11 @@
 
                 if (resp.ok) {
                     uploadStatus.className = 'upload-status success';
-                    const rescanBtn = `<button class="btn btn-sm btn-primary" onclick="rescanProject(${result.id}, '${result.name}')" style="margin-left:8px;">重新扫描</button>`;
                     if (result.scan_id) {
-                        uploadStatus.innerHTML = `上传成功！项目 "${result.name}" 已创建，扫描中... <a href="/project/${result.id}">查看项目</a> <a href="/scan/${result.scan_id}">查看扫描</a> ${rescanBtn}`;
+                        uploadStatus.innerHTML = `上传成功！项目 "${result.name}" 已创建，扫描中... <a href="/project/${result.id}">查看项目</a> <a href="/scan/${result.scan_id}">查看扫描</a>`;
                         setTimeout(() => location.reload(), 3000);
                     } else {
-                        uploadStatus.innerHTML = `项目 "${result.name}" 已创建 <a href="/project/${result.id}">查看项目</a> ${rescanBtn}`;
+                        uploadStatus.innerHTML = `项目 "${result.name}" 已创建 <a href="/project/${result.id}">查看项目</a>`;
                         setTimeout(() => location.reload(), 2000);
                     }
                 } else {
@@ -239,29 +285,6 @@
             if (!confirm('确定删除此项目？关联的扫描数据也会被删除。')) return;
             await fetch(`/api/projects/${id}`, { method: 'DELETE' });
             location.reload();
-        }
-
-        /**
-         * 重新扫描项目（主页面用）
-         */
-        async function rescanProject(id, name) {
-            var autoAI = document.getElementById('auto-ai-checkbox');
-            var autoVerify = document.getElementById('auto-verify-checkbox');
-            var autoFix = document.getElementById('auto-fix-checkbox');
-            var autoAiChecked = autoAI ? autoAI.checked : false;
-            var autoVerifyChecked = autoVerify ? autoVerify.checked : false;
-            var autoFixChecked = autoFix ? autoFix.checked : false;
-            var resp = await fetch('/project/' + id + '/new-scan', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({auto_ai: autoAiChecked, auto_verify: autoVerifyChecked, auto_fix: autoFixChecked})
-            });
-            if (resp.ok) {
-                const data = await resp.json();
-                window.location.href = `/scan/${data.scan_id}`;
-            } else {
-                alert(`项目 "${name}" 重新扫描失败`);
-            }
         }
     </script>
 </body>

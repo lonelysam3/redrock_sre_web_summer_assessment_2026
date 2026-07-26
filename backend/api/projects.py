@@ -164,8 +164,11 @@ def upload_project():
     # ---- 3b. 是否自动 AI 分析 ----
     auto_ai = request.form.get("auto_ai", "0") == "1"
 
-    # ---- 3c. PHP 版本（仅 PHP 项目生效） ----
+    # ---- 3c. 版本/标准 ----
     php_version = (request.form.get("php_version", "") or "").strip() or None
+    python_version = (request.form.get("python_version", "") or "").strip() or None
+    cpp_standard = (request.form.get("cpp_standard", "") or "").strip() or None
+    c_standard = (request.form.get("c_standard", "") or "").strip() or None
 
     # ---- 4. 执行解压 ----
     extract_base = str(Config.EXTRACT_FOLDER)
@@ -200,6 +203,9 @@ def upload_project():
         source_type="upload",
         original_filename=file.filename,
         php_version=php_version,
+        python_version=python_version,
+        cpp_standard=cpp_standard,
+        c_standard=c_standard,
     )
     db.session.add(project)
     db.session.commit()

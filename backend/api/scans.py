@@ -10,7 +10,7 @@
   DELETE /api/scans/<id>             — 删除扫描任务
 """
 from flask import Blueprint, request, jsonify
-from models import db, Project, ScanTask
+from models import db, Project, ScanTask, now_cn
 
 # 创建蓝图，挂载到 /api/scans
 scans_bp = Blueprint("scans", __name__)
@@ -70,3 +70,32 @@ def delete_scan(scan_id: int):
     db.session.delete(scan)
     db.session.commit()
     return jsonify({"deleted": True})
+
+
+@scans_bp.route("/<int:scan_id>/cancel", methods=["POST"])
+def cancel_scan(scan_id: int):
+    """
+    终止扫描任务
+    ============
+    将运行中/分析中/验证中的扫描标记为失败。
+    后台线程检测到状态变更后会自然终止。
+
+    参数:
+        scan_id: 扫描任务 ID
+
+    返回:
+        200 { cancelled: true }
+        404 { error: "不存在" }
+        400 { error: "已完成的任务无法终止" }
+    """
+    scan = db.session.get(ScanTask, scan_id)
+    if not scan:
+        return jsonify({"error": "不存在"}), 404
+
+    if scan.status in ("done", "failed"):
+        return jsonify({"error": "已完成的任务无法终止"}), 400
+
+    scan.status = "cancelled"
+    scan.finished_at = now_cn()
+    db.session.commit()
+    return jsonify({"cancelled": True})

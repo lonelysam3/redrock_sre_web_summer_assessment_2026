@@ -1,24 +1,19 @@
 """
 版本感知规则引擎（Version-Aware Rule Engine）
-==========================================
-将审计规则从扫描器中解耦，根据 PHP 版本动态激活/调整规则。
+==============================================
+将审计规则从扫描器中解耦，根据编程语言版本/标准动态激活/调整规则。
+
+支持的语言：
+  - PHP（版本感知：5.0 ~ 8.0）
+  - Python（版本感知：2.7 ~ 3.13）
+  - C / C++（标准感知：C89 ~ C++23）
 
 ==== 设计原则 ====
 
 1. 每条规则是一个独立的 AuditRule 数据类
-2. 规则有 min_php_version / max_php_version 控制生效范围
-3. 规则严重程度可根据 PHP 版本动态调整（如 PHP < 5.3.6 时宽字节风险更高）
+2. 规则有 min_version / max_version 控制生效范围
+3. 规则严重程度可根据版本/标准动态调整
 4. RuleEngine 是纯函数式模块，不依赖 tree-sitter/AST
-
-==== 规则类别 ====
-
-- wide_byte_injection:  宽字节注入（GBK + 模拟预处理 / addslashes）
-- sql_injection:        通用 SQL 注入
-- command_execution:    命令执行 / 代码注入
-- xss:                  跨站脚本
-- file_upload:          文件上传
-- deserialization:      反序列化
-- deprecated_api:       已废弃/删除的 API
 
 ==== 使用方式 ====
 
@@ -26,10 +21,14 @@
 
     engine = RuleEngine(PhpVersion.PHP_5_2)
     rules = engine.get_active_rules()
-    # rules 只包含 PHP 5.2 下生效的规则
 
-    severity = engine.adjust_severity("wide_byte_injection", "medium")
-    # PHP 5.2 下宽字节风险可能升级为 high
+    # Python
+    from engine.rule_engine import PythonRuleEngine, PythonVersion
+    engine = PythonRuleEngine(PythonVersion.PY_3_8)
+
+    # C/C++
+    from engine.rule_engine import CppRuleEngine, CppStandard
+    engine = CppRuleEngine(CppStandard.CPP_17)
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -122,8 +121,10 @@ class AuditRule:
     description: str
     category: RuleCategory
     default_severity: RuleSeverity = RuleSeverity.MEDIUM
-    min_php_version: Optional[str] = None      # PHP 版本号字符串，如 "5.3"
-    max_php_version: Optional[str] = None      # None = 无上限
+    min_php_version: Optional[str] = None      # PHP 版本号字符串，如 "5.3"（向后兼容）
+    max_php_version: Optional[str] = None      # None = 无上限（向后兼容）
+    min_version: Optional[str] = None           # 通用最小版本/标准
+    max_version: Optional[str] = None           # 通用最大版本/标准
     pattern: str = ""                           # 检测正则
     severity_overrides: dict[str, str] = field(default_factory=dict)
     confidence: float = 0.75
@@ -587,4 +588,568 @@ def resolve_php_version(
 
     detected = detect_php_version(source_codes)
     return detected, True
+
+
+# ========================================================================
+# Python 版本感知规则引擎
+# ========================================================================
+
+class PythonVersion(str, Enum):
+    """Python 版本枚举。关键安全变更：
+    - 2.7: print statement, input() eval, urllib 无验证
+    - 3.0: print 改为函数, input() 不再 eval
+    - 3.6: f-string, secrets 模块
+    - 3.8: pathlib 支持更多操作
+    - 3.11: subprocess 安全性增强
+    """
+    PY_2_7 = "2.7"
+    PY_3_6 = "3.6"
+    PY_3_7 = "3.7"
+    PY_3_8 = "3.8"
+    PY_3_9 = "3.9"
+    PY_3_10 = "3.10"
+    PY_3_11 = "3.11"
+    PY_3_12 = "3.12"
+    PY_3_13 = "3.13"
+
+
+PYTHON_AUDIT_RULES: list[AuditRule] = []
+
+
+def _pyrule(**kwargs) -> AuditRule:
+    r = AuditRule(**kwargs)
+    PYTHON_AUDIT_RULES.append(r)
+    return r
+
+# ---- Python 2.x 特有漏洞 ----
+
+_pyrule(
+    rule_id="PY_INPUT_EVAL",
+    name="input() 函数代码注入 (Python 2)",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.CRITICAL,
+    max_version="2.7",
+    description="Python 2 中 input() 等价于 eval(raw_input())，可执行任意代码。Python 3 已移除此行为。",
+    pattern=r"(?<!\.)input\s*\(",
+    confidence=0.95,
+)
+
+_pyrule(
+    rule_id="PY_RAW_INPUT",
+    name="raw_input() 已移除 (Python 3)",
+    category=RuleCategory.DEPRECATED_API,
+    default_severity=RuleSeverity.LOW,
+    min_version="3.0",
+    description="Python 3 中 raw_input() 已被移除，在 Python 2 代码迁移到 Python 3 时会报错。",
+    pattern=r"raw_input\s*\(",
+    confidence=0.9,
+)
+
+# ---- 全版本通用漏洞 ----
+
+_pyrule(
+    rule_id="PY_EXEC_CODE",
+    name="exec() 执行动态代码",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.CRITICAL,
+    description="exec() 执行用户可控字符串作为代码。应避免使用或严格限制输入来源。",
+    pattern=r"\bexec\s*\(",
+    confidence=0.9,
+)
+
+_pyrule(
+    rule_id="PY_EVAL_CODE",
+    name="eval() 动态求值",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.HIGH,
+    description="eval() 对字符串求值，若含用户输入可导致代码执行。应使用 ast.literal_eval() 或避免 eval。",
+    pattern=r"\beval\s*\(",
+    confidence=0.85,
+)
+
+_pyrule(
+    rule_id="PY_SUBPROCESS_SHELL",
+    name="subprocess shell=True 命令注入",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.HIGH,
+    description="subprocess 使用 shell=True 且参数串联用户输入时存在命令注入风险。应使用列表参数传递。",
+    pattern=r"shell\s*=\s*True",
+    confidence=0.85,
+)
+
+_pyrule(
+    rule_id="PY_OS_SYSTEM",
+    name="os.system() 命令执行",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.HIGH,
+    description="os.system() 执行 shell 命令，若含用户输入存在命令注入。应使用 subprocess.run() 替代。",
+    pattern=r"os\.system\s*\(",
+    confidence=0.9,
+)
+
+_pyrule(
+    rule_id="PY_OS_POPEN",
+    name="os.popen() 命令执行",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.MEDIUM,
+    description="os.popen() 打开管道执行命令，存在命令注入风险。",
+    pattern=r"os\.popen\s*\(",
+    confidence=0.85,
+)
+
+_pyrule(
+    rule_id="PY_PICKLE_UNSAFE",
+    name="pickle 反序列化",
+    category=RuleCategory.DESERIALIZATION,
+    default_severity=RuleSeverity.HIGH,
+    description="pickle.loads() 反序列化不可信数据可导致任意代码执行。应使用 json 或限制 pickle 来源。",
+    pattern=r"pickle\.(?:loads?|Unpickler)\s*\(",
+    confidence=0.9,
+)
+
+_pyrule(
+    rule_id="PY_YAML_UNSAFE",
+    name="yaml.load() 不安全加载",
+    category=RuleCategory.DESERIALIZATION,
+    default_severity=RuleSeverity.HIGH,
+    description="PyYAML 的 yaml.load() 可构造任意 Python 对象。应使用 yaml.safe_load() 替代。",
+    pattern=r"yaml\.load\s*\(",
+    confidence=0.9,
+)
+
+_pyrule(
+    rule_id="PY_SQL_CONCAT",
+    name="SQL 字符串拼接",
+    category=RuleCategory.SQL_INJECTION,
+    default_severity=RuleSeverity.HIGH,
+    description="SQL 查询通过字符串拼接或 f-string 包含用户输入。应使用参数化查询（%s 占位符）。",
+    pattern=r"(?:execute|cursor)\.*(?:f['\"]|['\"].*%)",
+    confidence=0.85,
+)
+
+_pyrule(
+    rule_id="PY_FSTRING_SQL",
+    name="f-string SQL 注入",
+    category=RuleCategory.SQL_INJECTION,
+    default_severity=RuleSeverity.HIGH,
+    min_version="3.6",
+    description="Python 3.6+ 中使用 f-string 拼接 SQL 查询，完全绕过参数化。",
+    pattern=r"execute\s*\(\s*f['\"]",
+    confidence=0.9,
+)
+
+_pyrule(
+    rule_id="PY_MARSHAL_UNSAFE",
+    name="marshal 反序列化",
+    category=RuleCategory.DESERIALIZATION,
+    default_severity=RuleSeverity.MEDIUM,
+    description="marshal.loads() 反序列化不可信数据可能导致代码执行。",
+    pattern=r"marshal\.(?:loads?|dumps?)\s*\(",
+    confidence=0.8,
+)
+
+_pyrule(
+    rule_id="PY_SHELVE_UNSAFE",
+    name="shelve 反序列化",
+    category=RuleCategory.DESERIALIZATION,
+    default_severity=RuleSeverity.MEDIUM,
+    description="shelve 模块内部使用 pickle，反序列化不可信数据存在风险。",
+    pattern=r"shelve\.open\s*\(",
+    confidence=0.7,
+)
+
+_pyrule(
+    rule_id="PY_OPEN_PATH_TRAVERSAL",
+    name="open() 路径穿越",
+    category=RuleCategory.PATH_TRAVERSAL,
+    default_severity=RuleSeverity.HIGH,
+    description="open() 的文件路径包含用户输入，可能导致目录穿越读取任意文件。应使用 os.path.basename 过滤。",
+    pattern=r"\bopen\s*\([^)]*\+",
+    confidence=0.8,
+)
+
+_pyrule(
+    rule_id="PY_REQUESTS_NO_VERIFY",
+    name="requests SSL 验证关闭",
+    category=RuleCategory.SSRF,
+    default_severity=RuleSeverity.MEDIUM,
+    description="requests 调用设置了 verify=False，禁用 SSL 证书验证，易受中间人攻击。",
+    pattern=r"verify\s*=\s*False",
+    confidence=0.75,
+)
+
+_pyrule(
+    rule_id="PY_TEMPLATE_INJECTION",
+    name="模板注入 (Jinja2/Mako)",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.CRITICAL,
+    description="模板引擎的模板字符串包含用户输入，可能导致 SSTI 服务器端模板注入。",
+    pattern=r"(?:Template|Environment|render_template_string)\s*\([^)]*\+",
+    confidence=0.8,
+)
+
+
+class PythonRuleEngine:
+    """Python 版本感知规则引擎"""
+
+    def __init__(self, python_version: str = "3.8"):
+        self.python_version = python_version
+
+    @property
+    def version_tuple(self) -> tuple[int, ...]:
+        return _version_to_tuple(self.python_version)
+
+    def get_active_rules(self) -> list[AuditRule]:
+        active = []
+        current = self.version_tuple
+        for rule in PYTHON_AUDIT_RULES:
+            if rule.min_version is not None:
+                min_v = _version_to_tuple(rule.min_version)
+                if current and current < min_v:
+                    continue
+            if rule.max_version is not None:
+                max_v = _version_to_tuple(rule.max_version)
+                if current and current > max_v:
+                    continue
+            active.append(rule)
+        return active
+
+    def get_version_context(self) -> dict:
+        """返回 Python 版本上下文，供扫描器使用"""
+        return {
+            "is_python2": self.version_tuple < (3,),
+            "has_fstring": self.version_tuple >= (3, 6),
+            "has_walrus": self.version_tuple >= (3, 8),
+            "has_match": self.version_tuple >= (3, 10),
+            "input_is_safe": self.version_tuple >= (3,),
+        }
+
+
+# ========================================================================
+# C/C++ 标准感知规则引擎
+# ========================================================================
+
+class CppStandard(str, Enum):
+    """C/C++ 标准枚举。关键安全变更：
+    - C11: 移除 gets(), 添加 bounds-checking 接口
+    - C++11: nullptr, std::unique_ptr, std::make_shared
+    - C++17: std::string_view, std::optional
+    """
+    C89 = "c89"
+    C99 = "c99"
+    C11 = "c11"
+    C17 = "c17"
+    C23 = "c23"
+    CPP_98 = "c++98"
+    CPP_11 = "c++11"
+    CPP_14 = "c++14"
+    CPP_17 = "c++17"
+    CPP_20 = "c++20"
+    CPP_23 = "c++23"
+
+    def is_cpp(self) -> bool:
+        return self.value.startswith("c++")
+
+    def is_c(self) -> bool:
+        return not self.is_cpp()
+
+
+CPP_AUDIT_RULES: list[AuditRule] = []
+
+
+def _cpprule(**kwargs) -> AuditRule:
+    r = AuditRule(**kwargs)
+    CPP_AUDIT_RULES.append(r)
+    return r
+
+# ---- 预 C11 特有漏洞 ----
+
+_cpprule(
+    rule_id="C_GETS_FUNCTION",
+    name="gets() 缓冲区溢出 (C11 已移除)",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.CRITICAL,
+    max_version="c99",
+    description="gets() 不检查缓冲区边界，已在 C11 中移除。应使用 fgets() 替代。",
+    pattern=r"\bgets\s*\(",
+    confidence=0.95,
+)
+
+# ---- 跨版本通用漏洞 ----
+
+_cpprule(
+    rule_id="C_STRCPY_UNSAFE",
+    name="strcpy() 无边界检查",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.HIGH,
+    description="strcpy() 不检查目标缓冲区大小，可导致缓冲区溢出。应使用 strncpy() 或 strcpy_s()。",
+    pattern=r"\bstrcpy\s*\(",
+    confidence=0.9,
+    severity_overrides={"c11": "critical", "c++11": "critical"},
+)
+
+_cpprule(
+    rule_id="C_STRCAT_UNSAFE",
+    name="strcat() 无边界检查",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.HIGH,
+    description="strcat() 拼接字符串时不检查缓冲区大小。应使用 strncat() 或 strcat_s()。",
+    pattern=r"\bstrcat\s*\(",
+    confidence=0.9,
+)
+
+_cpprule(
+    rule_id="C_SPRINTF_UNSAFE",
+    name="sprintf() 无边界检查",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.HIGH,
+    description="sprintf() 不限制输出长度，可导致缓冲区溢出。应使用 snprintf()。",
+    pattern=r"\bsprintf\s*\(",
+    confidence=0.9,
+)
+
+_cpprule(
+    rule_id="C_SCANF_UNSAFE",
+    name="scanf() 无长度限制",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.MEDIUM,
+    description="scanf() 的 %s 格式符不限制输入长度。应使用 %Ns 指定最大宽度。",
+    pattern=r"\bscanf\s*\([^)]*%s",
+    confidence=0.85,
+)
+
+_cpprule(
+    rule_id="C_SYSTEM_CALL",
+    name="system() 命令执行",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.HIGH,
+    description="system() 执行 shell 命令，若参数含用户输入存在命令注入。应使用 exec 系列函数。",
+    pattern=r"\bsystem\s*\(",
+    confidence=0.9,
+)
+
+_cpprule(
+    rule_id="C_POPEN_CALL",
+    name="popen() 命令执行",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.HIGH,
+    description="popen() 通过 shell 执行命令。应避免使用或严格过滤输入。",
+    pattern=r"\bpopen\s*\(",
+    confidence=0.85,
+)
+
+_cpprule(
+    rule_id="C_SQL_INJECTION",
+    name="C 字符串拼接 SQL",
+    category=RuleCategory.SQL_INJECTION,
+    default_severity=RuleSeverity.HIGH,
+    description="SQL 语句通过 sprintf/strcat 拼接用户输入。应使用参数化查询（占位符）。",
+    pattern=r"(?:sprintf|strcat)\s*\([^)]*SELECT",
+    confidence=0.8,
+)
+
+_cpprule(
+    rule_id="C_FORMAT_STRING",
+    name="printf 格式化字符串漏洞",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.HIGH,
+    description="printf 类函数的格式字符串包含用户输入，可导致信息泄露或任意写入。",
+    pattern=r"(?:printf|fprintf|sprintf)\s*\(\s*\w+\s*\)",
+    confidence=0.85,
+)
+
+_cpprule(
+    rule_id="C_MEMORY_LEAK",
+    name="malloc 无对应 free",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.MEDIUM,
+    description="malloc/calloc/realloc 分配的内存可能存在泄漏风险。建议使用 RAII 或智能指针。",
+    pattern=r"\b(?:malloc|calloc|realloc)\s*\(",
+    confidence=0.6,
+)
+
+_cpprule(
+    rule_id="C_NO_BOUNDS_CHECK",
+    name="数组越界访问风险",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.MEDIUM,
+    description="C 风格数组不进行边界检查，使用用户输入作为索引可导致越界读写。",
+    pattern=r"\w+\s*\[\s*\w+\s*\]",
+    confidence=0.55,
+)
+
+_cpprule(
+    rule_id="CXX_NEW_NO_DELETE",
+    name="new 无对应 delete (C++)",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.MEDIUM,
+    min_version="c++98",
+    description="使用 new 分配内存但未显示释放。C++11+ 应使用 std::unique_ptr 或 std::shared_ptr。",
+    pattern=r"\bnew\s+\w+",
+    confidence=0.55,
+    severity_overrides={"c++11": "high"},
+)
+
+_cpprule(
+    rule_id="CXX_RAW_POINTER",
+    name="裸指针管理 (C++)",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.LOW,
+    min_version="c++11",
+    description="C++11+ 中仍使用裸指针 (T*) 而非智能指针，增加内存安全和悬挂指针风险。",
+    pattern=r"\w+\s*\*\s*\w+\s*=\s*new",
+    confidence=0.5,
+)
+
+_cpprule(
+    rule_id="C_FOPEN_PATH_TRAVERSAL",
+    name="fopen() 路径穿越",
+    category=RuleCategory.PATH_TRAVERSAL,
+    default_severity=RuleSeverity.HIGH,
+    description="fopen() 的文件路径含用户输入，可能导致目录穿越。应规范化路径并限制访问范围。",
+    pattern=r"\bfopen\s*\([^)]*\+",
+    confidence=0.8,
+)
+
+_cpprule(
+    rule_id="C_REALLOC_NULL",
+    name="realloc() 返回 NULL 风险",
+    category=RuleCategory.COMMAND_EXECUTION,
+    default_severity=RuleSeverity.MEDIUM,
+    description="realloc() 失败时返回 NULL 且原内存未释放，直接赋值给原指针会导致内存泄漏。应使用临时变量。",
+    pattern=r"\w+\s*=\s*realloc\s*\(\s*\w+",
+    confidence=0.7,
+)
+
+
+class CppRuleEngine:
+    """C/C++ 标准感知规则引擎"""
+
+    # 标准排序（用于版本比较）
+    _STANDARD_ORDER = {
+        "c89": 0, "c99": 1, "c11": 2, "c17": 3, "c23": 4,
+        "c++98": 10, "c++11": 11, "c++14": 12, "c++17": 13, "c++20": 14, "c++23": 15,
+    }
+
+    def __init__(self, cpp_standard: str = "c11"):
+        self.cpp_standard = cpp_standard
+
+    @property
+    def is_cpp(self) -> bool:
+        return self.cpp_standard.startswith("c++")
+
+    @property
+    def _order(self) -> int:
+        return self._STANDARD_ORDER.get(self.cpp_standard, 0)
+
+    def _version_gte(self, a: str, b: str) -> bool:
+        """标准版本比较 a >= b"""
+        return self._STANDARD_ORDER.get(a, 0) >= self._STANDARD_ORDER.get(b, 0)
+
+    def _version_lte(self, a: str, b: str) -> bool:
+        """标准版本比较 a <= b"""
+        return self._STANDARD_ORDER.get(a, 0) <= self._STANDARD_ORDER.get(b, 0)
+
+    def get_active_rules(self) -> list[AuditRule]:
+        """获取当前标准下生效的规则"""
+        active = []
+        for rule in CPP_AUDIT_RULES:
+            if rule.min_version is not None:
+                if not self._version_gte(self.cpp_standard, rule.min_version):
+                    continue
+            if rule.max_version is not None:
+                if not self._version_lte(self.cpp_standard, rule.max_version):
+                    continue
+            active.append(rule)
+        return active
+
+    def adjust_severity(self, rule_id: str, base_severity: str) -> str:
+        """根据 C/C++ 标准调整严重程度"""
+        for r in CPP_AUDIT_RULES:
+            if r.rule_id == rule_id:
+                if self.cpp_standard in r.severity_overrides:
+                    return r.severity_overrides[self.cpp_standard]
+                return base_severity
+        return base_severity
+
+    def get_standard_context(self) -> dict:
+        """返回标准上下文供扫描器使用"""
+        return {
+            "is_cpp": self.is_cpp,
+            "has_nullptr": self._version_gte(self.cpp_standard, "c++11"),
+            "has_smart_ptr": self._version_gte(self.cpp_standard, "c++11"),
+            "has_string_view": self._version_gte(self.cpp_standard, "c++17"),
+            "gets_removed": self._version_gte(self.cpp_standard, "c11"),
+        }
+
+
+# ========================================================================
+# Python / C 版本自动检测
+# ========================================================================
+
+_PYTHON_VERSION_SIGNATURES: list[tuple[str, str, str]] = [
+    ("3.13", r"\btype\s+\w+\s*=\s*\([^)]+\)\s*:", "PEP 695 type 语句"),
+    ("3.12", r"\btype\s+\w+\s*\([^)]*\)\s*:", "PEP 695 泛型语法"),
+    ("3.10", r"\bmatch\s+\w+\s*:", "match-case 模式匹配"),
+    ("3.9", r"list\[str\]|dict\[str,\s*int\]", "内置泛型 list[str]"),
+    ("3.8", r":=\s*\w+", "海象运算符 :="),
+    ("3.7", r"from\s+__future__\s+import\s+annotations", "from __future__ annotations"),
+    ("3.6", r"f['\"].*\{.*\}.*['\"]", "f-string"),
+    ("2.7", r"(?<!def\s)(?<!\.)(?<!import\s)\bprint\s+[^(]", "print 语句 (Python 2)"),
+]
+
+_C_VERSION_SIGNATURES: list[tuple[str, str, str]] = [
+    ("c23", r"\bconstexpr\b", "C23 constexpr"),
+    ("c23", r"\bnullptr\b", "C23 nullptr"),
+    ("c17", r"\b_Generic\b", "C11 _Generic"),
+    ("c11", r"\b_Alignas\b|\b_Alignof\b|\b_Noreturn\b", "C11 关键字"),
+    ("c99", r"\/\/", "// 单行注释 (C99)"),
+    ("c99", r"for\s*\(\s*(?:int|float|double|char)\s+\w+\s*=", "for 循环内声明变量 (C99)"),
+]
+
+_CPP_VERSION_SIGNATURES: list[tuple[str, str, str]] = [
+    ("c++23", r"import\s+<\w+>", "C++23 import 模块"),
+    ("c++20", r"\bco_await\b|\bco_yield\b|\bco_return\b", "C++20 协程"),
+    ("c++20", r"\bconcept\s+\w+\s*=", "C++20 concept"),
+    ("c++17", r"if\s*\(\s*constexpr", "C++17 if constexpr"),
+    ("c++17", r"std::string_view", "C++17 string_view"),
+    ("c++14", r"auto\s+\w+\s*\([^)]*\)\s*->\s*\w+", "C++14 返回类型推导"),
+    ("c++11", r"\bnullptr\b", "C++11 nullptr"),
+    ("c++11", r"std::unique_ptr|std::shared_ptr|std::make_shared", "C++11 智能指针"),
+    ("c++11", r"auto\s+\w+\s*=\s*.*;", "C++11 auto 类型推导"),
+]
+
+
+def detect_python_version(source_codes: dict[str, str]) -> str:
+    """从 Python 源码自动检测版本"""
+    all_code = "\n".join(source_codes.values())
+    code_only = re.sub(r'#.*', '', all_code)
+    code_only = re.sub(r'(""".*?"""|\'\'\'.*?\'\'\')', '', code_only, flags=re.DOTALL)
+
+    for version, pattern, desc in _PYTHON_VERSION_SIGNATURES:
+        if re.search(pattern, code_only):
+            return version
+    return "3.6"  # 默认
+
+
+def detect_c_version(source_codes: dict[str, str]) -> str:
+    """从 C 源码自动检测标准"""
+    all_code = "\n".join(source_codes.values())
+    code_only = re.sub(r'(//[^\n]*|/\*.*?\*/)', '', all_code, flags=re.DOTALL)
+
+    for version, pattern, desc in _C_VERSION_SIGNATURES:
+        if re.search(pattern, code_only):
+            return version
+    return "c89"
+
+
+def detect_cpp_version(source_codes: dict[str, str]) -> str:
+    """从 C++ 源码自动检测标准"""
+    all_code = "\n".join(source_codes.values())
+    code_only = re.sub(r'(//[^\n]*|/\*.*?\*/)', '', all_code, flags=re.DOTALL)
+
+    for version, pattern, desc in _CPP_VERSION_SIGNATURES:
+        if re.search(pattern, code_only):
+            return version
+    return "c++98"
 

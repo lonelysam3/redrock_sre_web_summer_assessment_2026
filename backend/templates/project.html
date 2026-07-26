@@ -13,6 +13,7 @@
             <a href="javascript:history.back()" class="btn btn-sm" style="margin-right:12px;">返回</a>
             <h1><a href="/">{{ project.name }}</a></h1>
             <nav>
+                <a href="/settings">AI 设置</a>
                 <span class="header-theme-wrap">
                     <span class="header-theme-label">主题</span>
                     <button class="theme-toggle" onclick="toggleTheme()" title="切换深色/浅色模式">
@@ -32,11 +33,32 @@
                     {% if project.language == 'php' %}
                     <strong>PHP 版本：</strong>
                     {% if project.php_version and project.php_version.startswith('auto(') %}
-                    <span class="badge" style="background:var(--surface);color:var(--green);">自动检测 → {{ project.php_version[5:-1] }}</span>
+                    <span class="badge" style="background:var(--surface);color:var(--green);">自动检测 -> {{ project.php_version[5:-1] }}</span>
                     {% elif project.php_version %}
                     <span class="badge" style="background:var(--surface);">{{ project.php_version }}</span>
                     {% else %}
                     <span class="badge" style="background:var(--surface);color:var(--subtext);">未设置</span>
+                    {% endif %}
+                    {% endif %}
+                    {% if project.language == 'python' %}
+                    <strong>Python 版本：</strong>
+                    {% if project.python_version and project.python_version.startswith('auto(') %}
+                    <span class="badge" style="background:var(--surface);color:var(--green);">自动检测 -> {{ project.python_version[5:-1] }}</span>
+                    {% elif project.python_version %}
+                    <span class="badge" style="background:var(--surface);">{{ project.python_version }}</span>
+                    {% else %}
+                    <span class="badge" style="background:var(--surface);color:var(--subtext);">未扫描</span>
+                    {% endif %}
+                    {% endif %}
+                    {% if project.language in ('c', 'cpp') %}
+                    {% set std_val = project.c_standard if project.language == 'c' else project.cpp_standard %}
+                    <strong>C/C++ 标准：</strong>
+                    {% if std_val and std_val.startswith('auto(') %}
+                    <span class="badge" style="background:var(--surface);color:var(--green);">自动检测 -> {{ std_val[5:-1] }}</span>
+                    {% elif std_val %}
+                    <span class="badge" style="background:var(--surface);">{{ std_val }}</span>
+                    {% else %}
+                    <span class="badge" style="background:var(--surface);color:var(--subtext);">未扫描</span>
                     {% endif %}
                     {% endif %}
                     {% if project.original_filename %}
@@ -46,19 +68,31 @@
                 <!-- 开始扫描按钮，触发异步扫描 + 轮询 -->
                 <button class="btn btn-primary" id="start-scan-btn" onclick="startScan()">开始扫描</button>
             </div>
-            <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;">
-                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
-                    <input type="checkbox" id="auto-ai-checkbox" style="accent-color:var(--blue);">
-                    AI 分析
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
-                    <input type="checkbox" id="auto-verify-checkbox" style="accent-color:var(--violet);">
-                    Payload 验证
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--subtext);cursor:pointer;">
-                    <input type="checkbox" id="auto-fix-checkbox" style="accent-color:var(--teal);">
-                    AI 修复
-                </label>
+            <div style="margin-top:10px;">
+                <p style="font-size:0.85em;color:var(--subtext);margin-bottom:8px;">扫描完成后自动执行（勾选即生效）：</p>
+                <div style="display:flex;gap:24px;flex-wrap:wrap;">
+                    <div>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--text);cursor:pointer;font-weight:600;">
+                            <input type="checkbox" id="auto-ai-checkbox" style="accent-color:var(--blue);">
+                            AI 分析
+                        </label>
+                        <p style="font-size:0.75em;color:var(--subtext);margin:2px 0 0 22px;">深度分析漏洞成因、攻击方式</p>
+                    </div>
+                    <div>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--text);cursor:pointer;font-weight:600;">
+                            <input type="checkbox" id="auto-verify-checkbox" style="accent-color:var(--violet);">
+                            Payload 验证
+                        </label>
+                        <p style="font-size:0.75em;color:var(--subtext);margin:2px 0 0 22px;">构建攻击 Payload，验证漏洞真实性</p>
+                    </div>
+                    <div>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.9em;color:var(--text);cursor:pointer;font-weight:600;">
+                            <input type="checkbox" id="auto-fix-checkbox" style="accent-color:var(--teal);">
+                            AI 修复
+                        </label>
+                        <p style="font-size:0.75em;color:var(--subtext);margin:2px 0 0 22px;">自动生成修复代码（不修改源文件）</p>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -89,6 +123,8 @@
                             <span class="badge badge-yellow">扫描中...</span>
                             {% elif s.status == 'analyzing' %}
                             <span class="badge" style="background:var(--blue);color:var(--badge-text)">AI分析中</span>
+                            {% elif s.status == 'cancelled' %}
+                            <span class="badge badge-cancelled">已取消</span>
                             {% elif s.status == 'failed' %}
                             <span class="badge badge-red">失败</span>
                             {% else %}
@@ -98,9 +134,10 @@
                         <td>{{ s.vulns_found }}</td>
                         <td>{{ s.created_at.strftime('%Y-%m-%d %H:%M') if s.created_at else '-' }}</td>
                         <td>
-                            <!-- 查看详细结果 -->
                             <a href="/scan/{{ s.id }}" class="btn btn-sm">查看</a>
-                            <!-- 删除扫描记录 -->
+                            {% if s.status in ('running', 'analyzing', 'verifying') %}
+                            <button class="btn btn-sm btn-danger" onclick="stopScan({{ s.id }})">终止</button>
+                            {% endif %}
                             <button class="btn btn-sm btn-danger" onclick="deleteScan({{ s.id }})">删除</button>
                         </td>
                     </tr>
@@ -193,6 +230,29 @@
             await fetch(`/api/scans/${id}`, { method: 'DELETE' });
             location.reload();
         }
+
+        /**
+         * 终止扫描
+         */
+        async function stopScan(id) {
+            if (!confirm('确定终止此扫描任务？')) return;
+            var resp = await fetch('/api/scans/' + id + '/cancel', { method: 'POST' });
+            if (resp.ok) {
+                location.reload();
+            } else {
+                var err = await resp.json().catch(function() { return {}; });
+                alert('终止失败: ' + (err.error || '未知错误'));
+            }
+        }
+
+        // 返回按钮刷新：当用户从扫描页通过返回按钮回到此页时自动刷新
+        (function() {
+            window.addEventListener('pageshow', function(e) {
+                if (e.persisted || performance.navigation.type === 2) {
+                    location.reload();
+                }
+            });
+        })();
     </script>
 </body>
 </html>

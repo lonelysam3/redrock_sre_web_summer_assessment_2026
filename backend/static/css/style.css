@@ -193,7 +193,7 @@ html {
 }
 
 body {
-    font-family: 'Frutiger', 'Frutiger LT Std', 'Segoe UI', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
     background: var(--body-bg);
     color: var(--text);
     line-height: 1.6;
@@ -740,7 +740,7 @@ code {
     letter-spacing: 0.3px;
 }
 
-/* 严重程度 — 彩色渐变 */
+/* 严重程度 — 切角四边形 + 彩色渐变 */
 .badge-green,
 .badge-low {
     background: linear-gradient(135deg, var(--teal), var(--green));
@@ -772,6 +772,13 @@ code {
 
 .badge-pulse {
     animation: pulse 1.8s ease-in-out infinite, borderGlow 2s ease-in-out infinite;
+}
+
+.badge-cancelled {
+    background: var(--surface);
+    color: var(--subtext);
+    clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+    padding: 3px 16px;
 }
 
 /* ================================================================
@@ -862,7 +869,7 @@ code {
     text-align: center;
     padding: 56px 32px 40px;
     background: var(--bg);
-    border-radius: 20px;
+    border-radius: 20px 6px 20px 6px;
     border: 1px solid var(--glass-border);
     margin-bottom: 20px;
     transition: all 0.4s;
@@ -897,7 +904,7 @@ code {
     width: 72px;
     height: 72px;
     margin: 0 auto 16px;
-    border-radius: 18px;
+    border-radius: 50% 50% 6px 50%;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -906,10 +913,11 @@ code {
     position: relative;
     z-index: 1;
     transform: rotate(-3deg);
-    transition: transform 0.3s;
+    transition: transform 0.3s, border-radius 0.3s;
 }
 .safe-icon:hover {
     transform: rotate(0deg) scale(1.05);
+    border-radius: 12px;
 }
 .safe-hero .safe-icon {
     background: linear-gradient(135deg, var(--teal), var(--green));
@@ -1105,7 +1113,7 @@ code {
 .safe-note {
     background: var(--glow-blue);
     border: 1px solid rgba(56,189,248,0.2);
-    border-radius: 14px;
+    border-radius: 6px 20px 6px 20px;
     padding: 18px 22px;
     font-size: 0.9em;
     color: var(--subtext);
