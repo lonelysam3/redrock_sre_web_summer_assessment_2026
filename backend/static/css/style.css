@@ -179,6 +179,23 @@
     100% { transform: scale(1); opacity: 1; }
 }
 
+@keyframes borderSweep {
+    0%   { background-position: 0% 50%; }
+    100% { background-position: 200% 50%; }
+}
+
+@keyframes floatParticle {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    25%      { transform: translate(15px, -20px) scale(1.15); }
+    50%      { transform: translate(-10px, -35px) scale(0.9); }
+    75%      { transform: translate(-20px, -10px) scale(1.1); }
+}
+
+@keyframes glassShine {
+    0%   { left: -150%; }
+    100% { left: 150%; }
+}
+
 /* ================================================================
    Global Reset & Base
    ================================================================ */
@@ -250,6 +267,50 @@ body::after {
 }
 [data-theme="light"] body::after {
     background: radial-gradient(circle, rgba(15,118,110,0.09) 0%, transparent 70%);
+}
+
+/* 背景网格纹理 — 让毛玻璃有东西可"磨" */
+body {
+    background-image:
+        radial-gradient(circle at 20% 30%, var(--glow-violet) 0%, transparent 50%),
+        radial-gradient(circle at 80% 70%, var(--glow-teal) 0%, transparent 50%),
+        radial-gradient(circle at 50% 50%, var(--glow-blue) 0%, transparent 60%);
+    background-attachment: fixed;
+}
+
+/* 浮动装饰粒子 */
+.float-particles {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    overflow: hidden;
+}
+.float-particles::before,
+.float-particles::after {
+    content: '';
+    position: absolute;
+    border-radius: 50%;
+    animation: floatParticle 12s ease-in-out infinite;
+}
+.float-particles::before {
+    width: 8px;
+    height: 8px;
+    top: 25%;
+    left: 15%;
+    background: var(--blue);
+    opacity: 0.3;
+    animation-delay: 0s;
+}
+.float-particles::after {
+    width: 6px;
+    height: 6px;
+    top: 60%;
+    right: 20%;
+    background: var(--violet);
+    opacity: 0.25;
+    animation-delay: -4s;
+    animation-duration: 14s;
 }
 
 /* 内容容器 */
@@ -338,8 +399,8 @@ code {
    ================================================================ */
 .header {
     background: var(--header-gradient);
-    backdrop-filter: blur(28px);
-    -webkit-backdrop-filter: blur(28px);
+    backdrop-filter: blur(36px) saturate(1.3);
+    -webkit-backdrop-filter: blur(36px) saturate(1.3);
     border-bottom: 2px solid transparent;
     border-image: linear-gradient(90deg, var(--teal), var(--blue), var(--violet)) 1;
     padding: 16px 0;
@@ -348,6 +409,7 @@ code {
     animation: slideDown 0.5s ease;
     position: relative;
     z-index: 10;
+    box-shadow: 0 1px 20px rgba(0,0,0,0.08);
 }
 .header .container {
     display: flex;
@@ -407,17 +469,40 @@ code {
    ================================================================ */
 .card {
     background: var(--card-gradient);
-    backdrop-filter: blur(28px);
-    -webkit-backdrop-filter: blur(28px);
+    backdrop-filter: blur(36px) saturate(1.2);
+    -webkit-backdrop-filter: blur(36px) saturate(1.2);
     border-radius: 16px;
     padding: 24px;
     margin-bottom: 20px;
     border: 1px solid var(--glass-border);
-    box-shadow: var(--card-shadow);
+    box-shadow: var(--card-shadow),
+                inset 0 1px 0 rgba(255,255,255,0.06);
     transition: all 0.35s ease;
     animation: fadeIn 0.5s ease, slideUp 0.5s ease;
     position: relative;
     overflow: hidden;
+}
+/* 玻璃高光扫过 */
+.card::after {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -150%;
+    width: 60%;
+    height: 200%;
+    background: linear-gradient(
+        105deg,
+        transparent 40%,
+        rgba(255,255,255,0.04) 45%,
+        rgba(255,255,255,0.08) 50%,
+        rgba(255,255,255,0.04) 55%,
+        transparent 60%
+    );
+    transform: skewX(-15deg);
+    pointer-events: none;
+}
+.card:hover::after {
+    animation: glassShine 0.8s ease forwards;
 }
 .card::before {
     content: '';
@@ -434,7 +519,8 @@ code {
     opacity: 0.4;
 }
 .card:hover {
-    box-shadow: var(--card-lift);
+    box-shadow: var(--card-lift),
+                inset 0 1px 0 rgba(255,255,255,0.1);
     border-color: var(--blue);
     transform: translateY(-2px);
 }
