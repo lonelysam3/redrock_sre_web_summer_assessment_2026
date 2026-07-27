@@ -510,13 +510,18 @@ code {
     top: 0;
     left: 0;
     right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--teal), var(--blue), transparent);
-    opacity: 0;
-    transition: opacity 0.4s;
-}
-.card:hover::before {
-    opacity: 0.4;
+    height: 2px;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        var(--teal) 20%,
+        var(--blue) 50%,
+        var(--violet) 80%,
+        transparent 100%
+    );
+    background-size: 200% 100%;
+    opacity: 0.5;
+    animation: borderSweep 4s linear infinite;
 }
 .card:hover {
     box-shadow: var(--card-lift),
