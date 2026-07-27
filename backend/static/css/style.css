@@ -70,43 +70,43 @@
    CSS 变量 — 浅色模式
    ================================================================ */
 [data-theme="light"] {
-    --bg: #f8fafc;
-    --bg2: #f1f5f9;
-    --surface: #f8fafc;
-    --overlay: #e2e8f0;
-    --text: #0f172a;
-    --subtext: #475569;
-    --blue: #3b82f6;
-    --blue-hover: #2563eb;
-    --violet: #6366f1;
-    --violet-hover: #4f46e5;
-    --teal: #0d9488;
-    --teal-hover: #0f766e;
+    --bg: #fefcfb;
+    --bg2: #faf6f1;
+    --surface: #fefcfb;
+    --overlay: #e8ddd0;
+    --text: #3d2c1e;
+    --subtext: #6b5d53;
+    --blue: #c2410c;
+    --blue-hover: #9a3412;
+    --violet: #b45309;
+    --violet-hover: #92400e;
+    --teal: #0f766e;
+    --teal-hover: #115e59;
     --amber: #d97706;
     --amber-hover: #b45309;
-    --rose: #e11d48;
-    --rose-hover: #be123c;
-    --cyan: #0891b2;
-    --green: #16a34a;
-    --yellow: #ca8a04;
-    --red: #dc2626;
-    --peach: #ea580c;
-    --body-bg: #e2e8f0;
+    --rose: #b91c1c;
+    --rose-hover: #991b1b;
+    --cyan: #0e7490;
+    --green: #15803d;
+    --yellow: #a16207;
+    --red: #b91c1c;
+    --peach: #c2410c;
+    --body-bg: #f0ebe3;
     --card-shadow: 0 1px 3px rgba(0,0,0,0.04);
     --card-shadow-hover: 0 4px 16px rgba(0,0,0,0.06);
     --card-lift: 0 8px 24px rgba(0,0,0,0.08);
-    --code-bg: #f1f5f9;
+    --code-bg: #faf6f1;
     --badge-text: #ffffff;
-    --glass-bg: rgba(248,250,252,0.7);
-    --glass-border: rgba(148,163,184,0.2);
-    --glow-blue: rgba(59,130,246,0.08);
-    --glow-violet: rgba(99,102,241,0.08);
-    --glow-teal: rgba(13,148,136,0.08);
+    --glass-bg: rgba(254,252,251,0.7);
+    --glass-border: rgba(194,65,12,0.12);
+    --glow-blue: rgba(194,65,12,0.08);
+    --glow-violet: rgba(180,83,9,0.08);
+    --glow-teal: rgba(15,118,110,0.08);
     --glow-amber: rgba(217,119,6,0.08);
-    --glow-rose: rgba(225,29,72,0.08);
-    --glow-red: rgba(220,38,38,0.08);
-    --header-gradient: linear-gradient(180deg, rgba(248,250,252,0.92), rgba(226,232,240,0.8));
-    --card-gradient: linear-gradient(135deg, rgba(203,213,225,0.15), rgba(241,245,249,0.5), rgba(203,213,225,0.12));
+    --glow-rose: rgba(185,28,28,0.08);
+    --glow-red: rgba(185,28,28,0.08);
+    --header-gradient: linear-gradient(180deg, rgba(254,252,251,0.92), rgba(240,235,227,0.8));
+    --card-gradient: linear-gradient(135deg, rgba(232,221,208,0.2), rgba(250,246,241,0.55), rgba(232,221,208,0.15));
 }
 
 /* ================================================================
@@ -242,7 +242,7 @@ body::after {
 /* 浅色模式降低背景装饰透明度 */
 [data-theme="light"] body::before,
 [data-theme="light"] body::after {
-    opacity: 0.5;
+    opacity: 0.7;
 }
 
 /* 内容容器 */
@@ -430,13 +430,6 @@ code {
     box-shadow: var(--card-lift);
     border-color: var(--blue);
     transform: translateY(-2px);
-}
-/* 浅色模式降低卡片边框强度 */
-[data-theme="light"] .card {
-    border-color: rgba(148,163,184,0.25);
-}
-[data-theme="light"] .card:hover {
-    border-color: var(--blue);
 }
 .card:nth-child(2) { animation-delay: 0.06s; }
 .card:nth-child(3) { animation-delay: 0.12s; }
