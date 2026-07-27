@@ -299,10 +299,13 @@ class CScanner:
         """
         # ---- 形式 1：声明并赋值 (declaration) ----
         # 如: int x = getenv("HOME");
+        # 注意：当声明器是 init_declarator 时，跳过此分支，
+        # 由 init_declarator 分支统一处理，避免产生重复的传播边。
         if node.type == "declaration":
             decl = node.child_by_field_name("declarator")  # 声明器（变量名部分）
             value = node.child_by_field_name("value")       # 初始值表达式
-            if decl and value:
+            # 跳过 init_declarator：它会被下方的 elif 独立处理
+            if decl and value and decl.type != "init_declarator":
                 name = self._decl_name(decl, source_bytes)   # 提取变量名
                 vars_in_value = self._expr_vars(value, source_bytes)  # 提取值中的变量
                 if name:

@@ -53,6 +53,22 @@ SEVERITY_MAP = {
     VulnType.ARBITRARY_FILE_READ: "medium",    # 任意文件读取：与路径穿越类似
 }
 
+# ---- 消毒函数集合 ----
+# 这些函数可以将污点数据"清洗"为安全数据。
+# 类型强制转换（int/float/bool/str）是通用消毒，可阻断所有漏洞类型。
+# HTML 转义函数只阻断 XSS，对 SQL 注入/命令执行无效 — 但当前框架暂不区分漏洞类型，
+# 实际使用中消毒后的变量通常不会再流入敏感上下文，因此统一切断污点链。
+PYTHON_SANITIZER_NAMES = {
+    # 通用类型强制转换
+    "builtins.int", "builtins.float", "builtins.str", "builtins.bool", "builtins.bytes",
+    # XSS 消毒
+    "html.escape", "cgi.escape", "markupsafe.escape", "bleach.clean",
+    # 命令注入消毒
+    "shlex.quote",
+    # 路径消毒
+    "os.path.basename",
+}
+
 
 class PythonScanner:
     """
@@ -196,7 +212,7 @@ class PythonScanner:
         # ---- 5. 第一阶段：收集 Source / Sink / 赋值关系 ----
         self._visit_sources(tree, tracker, source_code, import_aliases)
         self._visit_sinks(tree, tracker, source_code, import_aliases)
-        self._visit_assignments(tree, tracker, source_code)
+        self._visit_assignments(tree, tracker, source_code, import_aliases)
 
         # ---- 6. 第二阶段：执行污点分析 ----
         raw_results = tracker.analyze()
@@ -269,6 +285,18 @@ class PythonScanner:
         """
         遍历 AST 找出所有 Sink 点（危险函数调用）。
 
+        匹配策略：仅使用 exact（import别名解析后全名）和 short_key（短名）匹配，
+        不使用裸函数名回退匹配（func_name == sk['func']）。
+
+        设计权衡：
+          删除裸名回退后，以下模式会漏报（False Negative）：
+            db = sqlite3.connect(...); cursor = db.cursor()
+            cursor.execute(user_input)  # cursor 不在 import 别名表中
+          这是因为 cursor 来自工厂方法返回值，单文件静态分析无法做类型推断。
+          要解决此问题需要跨语句返回值追踪（type inference），属于 v3 功能。
+          但此改动消除了最大的误报源（任意 .format() .execute() .get() .post() 等
+          被跨模块误匹配），FN/FP 权衡显著偏向减少误报。
+
         对每个函数调用检查是否匹配已知的 Sink 函数，
         匹配成功则标记传入的变量为危险出口。
         """
@@ -291,8 +319,10 @@ class PythonScanner:
                     s_exact = f"{sk['module']}.{sk['func']}"
                     s_short = f"{sk['module'].split('.')[-1]}.{sk['func']}"
 
-                    # 三种匹配策略：精确匹配、短名匹配、函数名匹配
-                    if exact == s_exact or short_key in (s_exact, s_short) or func_name == sk['func']:
+                    # 两种匹配策略：精确匹配、短名匹配
+                    # 注意：不使用裸函数名匹配（func_name == sk['func']），
+                    # 否则任意 .format() .execute() .get() .post() 都会误报
+                    if exact == s_exact or short_key in (s_exact, s_short):
                         self._mark_sink(node, tracker, source_code, sk, vuln_type)
                         break  # 匹配成功，跳过同类其他 Sink
 
@@ -321,7 +351,7 @@ class PythonScanner:
     # ========================================================================
 
     def _visit_assignments(self, tree: ast.AST, tracker: TaintTracker,
-                           source_code: str):
+                           source_code: str, aliases: dict[str, str] | None = None):
         """
         遍历 AST 收集所有赋值关系（变量传播）。
 
@@ -340,6 +370,8 @@ class PythonScanner:
                         code = ast.get_source_segment(source_code, node) or ""
                         tracker.mark_assign(target, val, reason="assignment",
                                             code=code, line=node.lineno)
+                # 消毒函数检测：x = int(y), x = html.escape(y) 等
+                self._check_sanitizer(node.value, targets, tracker, aliases or {})
 
             # ---- 增量赋值：x += expr ----
             elif isinstance(node, ast.AugAssign):
@@ -350,6 +382,7 @@ class PythonScanner:
                         code = ast.get_source_segment(source_code, node) or ""
                         tracker.mark_assign(target_name, val, reason="aug_assign",
                                             code=code, line=node.lineno)
+                    self._check_sanitizer(node.value, [target_name], tracker, aliases or {})
 
             # ---- 注解赋值：x: str = expr ----
             elif isinstance(node, ast.AnnAssign) and node.value:
@@ -361,6 +394,26 @@ class PythonScanner:
                         tracker.mark_assign(target_name, val,
                                             reason="ann_assign",
                                             code=code, line=node.lineno)
+                    self._check_sanitizer(node.value, [target_name], tracker, aliases or {})
+
+    def _check_sanitizer(self, value_node: ast.expr, targets: list[str],
+                         tracker: TaintTracker, aliases: dict[str, str]):
+        """
+        检查赋值的右侧表达式是否为消毒函数调用。
+        如果是，则对被赋值的变量调用 tracker.sanitize() 切断污点链。
+
+        示例:
+            x = int(user_input)      → sanitize("x")
+            name = html.escape(raw)  → sanitize("name")
+        """
+        if not isinstance(value_node, ast.Call):
+            return
+        sanitizer_full = self._resolve_full_call(value_node, aliases)
+        sanitizer_short = self._resolve_short_call(value_node)
+        if sanitizer_full in PYTHON_SANITIZER_NAMES or sanitizer_short in PYTHON_SANITIZER_NAMES:
+            sanitizer_name = sanitizer_full or sanitizer_short
+            for target in targets:
+                tracker.sanitize(target, sanitizer_name)
 
     # ========================================================================
     # 名称解析器（应用 import 别名）

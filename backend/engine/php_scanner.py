@@ -22,6 +22,33 @@ from engine.taint_tracker import TaintTracker
 from engine.sources_php import PHP_SOURCES
 from engine.sinks_php import PHP_SINKS, VulnType
 
+# ---- PHP 消毒函数集合 ----
+PHP_SANITIZER_NAMES = {
+    # 通用类型强制转换
+    "intval", "floatval", "boolval", "strval",
+    # XSS 消毒
+    "htmlspecialchars", "htmlentities", "strip_tags",
+    "filter_var",  # 带 FILTER_SANITIZE_* 参数时是消毒，不带时可能不是
+    # SQL 转义（注意：参数化查询才是正道，这些只是辅助）
+    "mysqli_real_escape_string", "mysql_real_escape_string",
+    "pg_escape_string", "pg_escape_literal",
+    "sqlite_escape_string",
+    # 命令注入消毒
+    "escapeshellcmd", "escapeshellarg",
+}
+
+# $_SERVER 中真正用户可控的键名（其余是服务器设定，非攻击面）
+# 只有这些键的值可能被攻击者操控
+SERVER_CONTROLLABLE_KEYS = frozenset({
+    "HTTP_HOST", "HTTP_USER_AGENT", "HTTP_ACCEPT", "HTTP_ACCEPT_LANGUAGE",
+    "HTTP_ACCEPT_ENCODING", "HTTP_REFERER", "HTTP_X_FORWARDED_FOR",
+    "HTTP_X_FORWARDED_HOST", "HTTP_X_FORWARDED_PROTO", "HTTP_X_REAL_IP",
+    "HTTP_ORIGIN", "HTTP_COOKIE", "HTTP_CONNECTION", "HTTP_CACHE_CONTROL",
+    "QUERY_STRING", "REQUEST_URI", "REQUEST_METHOD", "PATH_INFO",
+    "PHP_AUTH_USER", "PHP_AUTH_PW", "REMOTE_ADDR", "REMOTE_HOST",
+    "REMOTE_PORT", "SERVER_NAME",  # Host header 可控
+})
+
 try:
     import tree_sitter_php
     from tree_sitter import Language, Parser
@@ -148,6 +175,12 @@ class PHPScanner:
         if node.type == "subscript_expression":
             var_text = self._text_of_first_child(node, source_bytes)
             if var_text in self.source_set:
+                # $_SERVER 细化过滤：只标记用户可控的键
+                if var_text == "$_SERVER":
+                    key = self._subscript_key(node, source_bytes)
+                    # 动态键（以 $ 开头的变量名）无法静态确定，视为可能可控
+                    if key and not key.startswith("$") and key not in SERVER_CONTROLLABLE_KEYS:
+                        return  # 非用户可控的 $_SERVER 键，跳过
                 assigned_to = self._get_assigned_var(node)
                 tracker.mark_source(
                     assigned_to,
@@ -226,7 +259,7 @@ class PHPScanner:
     # ===================================================================
 
     def _detect_assignment(self, node, tracker: TaintTracker, source_bytes: bytes):
-        """检测 PHP 赋值关系"""
+        """检测 PHP 赋值关系及字符串拼接污点传播"""
         if node.type == "assignment_expression":
             left = node.child_by_field_name("left")
             right = node.child_by_field_name("right")
@@ -240,13 +273,39 @@ class PHPScanner:
                             lv, rv, reason="assign",
                             code=text, line=node.start_point[0] + 1,
                         )
+                # 消毒函数检测：$x = htmlspecialchars($y)
+                if self._is_sanitizer_call(right, source_bytes):
+                    for lv in left_vars:
+                        tracker.sanitize(lv, self._func_name(right, source_bytes) or "")
 
-        # 字符串拼接：$sql = "SELECT ..." . $input
+        # 字符串拼接：$sql = "SELECT ..." . $user_input
+        # . 运算符的两侧互相污染：任一侧有污点，结果就有污点。
+        # 实际的 $sql ← 两侧的传播由上层的 assignment_expression 分支处理，
+        # 这里建立双向边确保拼接表达式内部的污点不会丢失。
         elif node.type == "binary_expression":
-            if node.child_by_field_name("operator"):
-                op_text = self._text(node.child_by_field_name("operator"), source_bytes)
-                if op_text == ".":
-                    _ = op_text  # 暂存以备后用
+            op = node.child_by_field_name("operator")
+            if op and self._text(op, source_bytes) == ".":
+                left = node.child_by_field_name("left")
+                right = node.child_by_field_name("right")
+                if left and right:
+                    left_vars = self._extract_variable_names(left, source_bytes)
+                    right_vars = self._extract_variable_names(right, source_bytes)
+                    code = self._text(node, source_bytes)
+                    line = node.start_point[0] + 1
+                    for lv in left_vars:
+                        for rv in right_vars:
+                            # 双向污染：任一侧被污染，另一侧也视为被污染
+                            tracker.mark_assign(lv, rv, reason="concat",
+                                                code=code, line=line)
+                            tracker.mark_assign(rv, lv, reason="concat",
+                                                code=code, line=line)
+
+    def _is_sanitizer_call(self, node, source_bytes: bytes) -> bool:
+        """检查节点是否为消毒函数调用"""
+        if node.type == "function_call_expression":
+            func_name = self._func_name(node, source_bytes)
+            return func_name is not None and func_name in PHP_SANITIZER_NAMES
+        return False
 
     # ===================================================================
     # 辅助方法
@@ -260,6 +319,27 @@ class PHPScanner:
         """获取第一个子节点的文本"""
         if node.children:
             return self._text(node.children[0], source_bytes)
+        return ""
+
+    def _subscript_key(self, node, source_bytes: bytes) -> str:
+        """
+        从 subscript_expression 节点中提取下标键名。
+
+        示例:
+            $_SERVER['HTTP_HOST']  →  "HTTP_HOST"
+            $_GET['name']          →  "name"
+
+        tree-sitter PHP 中 subscript_expression 的子节点结构:
+            variable_name, [, string/encapsed_string, ]
+        返回去除了引号的键名字符串。
+        """
+        children = list(node.children)
+        # 跳过第一个（变量名）和第二个（[），取第三个作为 key
+        if len(children) >= 3:
+            key_node = children[2]
+            raw = self._text(key_node, source_bytes)
+            # 去除引号（单引号或双引号）
+            return raw.strip("'\"")
         return ""
 
     def _func_name(self, call_node, source_bytes: bytes) -> str | None:

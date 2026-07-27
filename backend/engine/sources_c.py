@@ -41,8 +41,8 @@ class CSource:
 # ---- C/C++ Source 点全集 ----
 C_SOURCES: list[CSource] = [
     # ============ 命令行参数 ============
-    CSource("main_argv", "main() 的 argv 参数", tainted_params=[1]),           # argv 是第二个参数
-    CSource("main_argc_argv", "main(argc, argv) 命令行参数", tainted_params=[1]),
+    # 注意：main 函数的 argv 参数由 CScanner._check_source 的
+    # function_definition 分支专门处理，不需要在此列出。
 
     # ============ 环境变量 ============
     CSource("getenv", "getenv() 环境变量"),                                    # 返回值是环境变量值

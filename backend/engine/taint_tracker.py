@@ -297,6 +297,24 @@ class TaintTracker:
         if self.graph.nodes[from_var].tainted:
             self.graph.nodes[to_var].tainted = True
 
+    def sanitize(self, var_name: str, sanitizer_func: str = "") -> None:
+        """
+        标记变量已被消毒函数清洗，切断污点传播链。
+
+        调用此方法后：
+          1. 该变量的 tainted 标志设为 False
+          2. 后续从该变量出发的赋值不会再自动传播污点
+          3. analyze() 中会跳过 tainted=False 的 Sink 节点
+
+        参数:
+            var_name:       要清洗的变量名
+            sanitizer_func: 消毒函数名（用于调试/报告）
+        """
+        if var_name in self.graph.nodes:
+            node = self.graph.nodes[var_name]
+            node.tainted = False
+            node.is_source = False  # 不再视为污点源
+
     def mark_concat(self, result_var: str, parts: list[str],
                     code: str = "", line: int = 0):
         """
@@ -363,8 +381,6 @@ class TaintTracker:
         sinks = self.graph.get_sinks()       # 所有 Sink 节点
 
         # 消毒函数集合：如果路径中经过这些函数，则认为数据已被清洗
-        sanitizers = {"int", "float", "escape", "html.escape", "cgi.escape", "bleach.clean"}
-
         visited_pairs = set()  # 避免重复处理相同的 (source, sink) 对
 
         for source in sources:
@@ -378,15 +394,23 @@ class TaintTracker:
                     continue
                 visited_pairs.add(pair)
 
+                # 关键检查：Sink 变量的污点是否已被消毒函数清除
+                # （sanitize() 方法会设置 tainted=False）
+                if not sink_node.tainted:
+                    continue
+
                 # 用 BFS 找出所有从 source 到 sink 的路径
                 paths = self.graph.find_paths(source, sink)
                 if not paths:
                     continue  # 没有路径，不是漏洞
 
-                # 检查每条路径上是否有消毒函数
+                # 检查每条路径上的节点是否全都保持污染状态
                 for path in paths:
-                    # 如果路径上任何节点是消毒函数，跳过此路径
-                    if any(s in sanitizers for s in path):
+                    # 如果路径上有任何节点的 tainted 被清除（经过了消毒），跳过此路径
+                    if any(
+                        self.graph.nodes.get(n) and not self.graph.nodes[n].tainted
+                        for n in path
+                    ):
                         continue
 
                     # 收集 source 和 sink 的详细信息

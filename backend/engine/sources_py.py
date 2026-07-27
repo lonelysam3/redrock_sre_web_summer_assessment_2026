@@ -56,13 +56,17 @@ PYTHON_SOURCES: list[Source] = [
 
     # ============ Python 通用 ============
     Source("builtins", "input", "input() 标准输入"),                                    # 命令行交互输入
-    Source("builtins", "open", "open() 文件读取（用于读取用户文件）"),                    # 读取用户上传的文件
     Source("sys", "argv", "sys.argv 命令行参数"),                                       # 命令行参数列表
     Source("os", "environ", "os.environ 环境变量"),                                     # 环境变量字典
     Source("os", "getenv", "os.getenv() 环境变量"),                                     # 单个环境变量获取
     Source("builtins", "__import__", "动态导入"),                                        # import('module_name')
 
-    # ============ 文件读取 ============
-    Source("pathlib.Path", "read_text", "Path.read_text() 文件内容"),                    # pathlib 读文本
-    Source("pathlib.Path", "read_bytes", "Path.read_bytes() 文件内容"),                  # pathlib 读二进制
+    # ============ 文件读取（仅当文件名也来自用户输入时才是真正的 Source）============
+    # 以下已被注释：open() / Path.read_text() 在静态分析中无法区分
+    # "读用户上传的文件"和"读系统配置文件"，导致误报率极高。
+    # 如需此检测，建议在扫描器中实现递归污点分析：
+    #   只有当 open() 的参数（文件名）也是 tainted 时，才标记返回值为 Source。
+    # Source("builtins", "open", "open() 文件读取（用于读取用户文件）"),
+    # Source("pathlib.Path", "read_text", "Path.read_text() 文件内容"),
+    # Source("pathlib.Path", "read_bytes", "Path.read_bytes() 文件内容"),
 ]
