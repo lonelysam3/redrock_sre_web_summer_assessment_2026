@@ -479,6 +479,15 @@ def create_app() -> Flask:
             "created_at": scan.created_at.isoformat() if scan.created_at else None,
         })
 
+    # ---- 阻止浏览器缓存 HTML 页面，保证返回时总是请求最新数据 ----
+    @app.after_request
+    def _no_cache(response):
+        if response.content_type and "text/html" in response.content_type:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     return app
 
 
