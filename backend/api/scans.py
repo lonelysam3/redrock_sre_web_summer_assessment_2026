@@ -72,6 +72,33 @@ def delete_scan(scan_id: int):
     return jsonify({"deleted": True})
 
 
+@scans_bp.route("/batch-delete", methods=["POST"])
+def batch_delete_scans():
+    """
+    批量删除扫描任务
+    ================
+    请求体: { "ids": [1, 2, 3] }
+    返回: { "deleted": 3, "errors": [] }
+    """
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids", [])
+    if not ids or not isinstance(ids, list):
+        return jsonify({"error": "请提供要删除的扫描 ID 列表"}), 400
+
+    deleted = 0
+    errors = []
+    for sid in ids:
+        scan = db.session.get(ScanTask, sid)
+        if not scan:
+            errors.append(f"扫描 {sid} 不存在")
+            continue
+        db.session.delete(scan)
+        deleted += 1
+
+    db.session.commit()
+    return jsonify({"deleted": deleted, "errors": errors})
+
+
 @scans_bp.route("/<int:scan_id>/cancel", methods=["POST"])
 def cancel_scan(scan_id: int):
     """

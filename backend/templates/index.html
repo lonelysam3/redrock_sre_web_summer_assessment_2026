@@ -135,12 +135,18 @@
 
         <!-- ========== 项目列表 ========== -->
         <section class="card">
-            <h2>项目列表</h2>
+            <div class="flex-between">
+                <h2>项目列表</h2>
+                <button class="btn btn-sm btn-danger batch-bar hidden" id="batch-delete-bar-projects" onclick="batchDeleteProjects()">
+                    批量删除 <span id="batch-count-projects">0</span> 项
+                </button>
+            </div>
             {% if projects %}
             <!-- Jinja2 条件渲染：有项目时显示表格 -->
             <table class="table">
                 <thead>
                     <tr>
+                        <th style="width:32px;"><input type="checkbox" class="batch-checkbox" onclick="toggleAll(this, 'project-check')" title="全选"></th>
                         <th>ID</th>
                         <th>名称</th>
                         <th>语言</th>
@@ -153,6 +159,7 @@
                     {% for p in projects %}
                     <!-- Jinja2 循环：遍历每个项目 -->
                     <tr>
+                        <td><input type="checkbox" class="batch-checkbox project-check" value="{{ p.id }}" onchange="updateBatchBar('project-check', 'batch-delete-bar-projects', 'batch-count-projects')"></td>
                         <td>{{ p.id }}</td>
                         <!-- 项目名可点击进入详情页 -->
                         <td><a href="/project/{{ p.id }}">{{ p.name }}</a></td>
@@ -296,6 +303,41 @@
             if (!confirm('确定删除此项目？关联的扫描数据也会被删除。')) return;
             await fetch(`/api/projects/${id}`, { method: 'DELETE' });
             location.reload();
+        }
+
+        /** 全选/取消全选 */
+        function toggleAll(checkbox, className) {
+            document.querySelectorAll('.' + className).forEach(function(cb) {
+                cb.checked = checkbox.checked;
+            });
+            updateBatchBar('project-check', 'batch-delete-bar-projects', 'batch-count-projects');
+        }
+
+        /** 更新批量操作栏 */
+        function updateBatchBar(checkClass, barId, countId) {
+            var checked = document.querySelectorAll('.' + checkClass + ':checked');
+            var bar = document.getElementById(barId);
+            var count = document.getElementById(countId);
+            if (checked.length > 0) {
+                bar.classList.remove('hidden');
+                count.textContent = checked.length;
+            } else {
+                bar.classList.add('hidden');
+            }
+        }
+
+        /** 批量删除项目 */
+        async function batchDeleteProjects() {
+            var checked = document.querySelectorAll('.project-check:checked');
+            if (checked.length === 0) return;
+            if (!confirm('确定删除选中的 ' + checked.length + ' 个项目？关联的扫描数据也会被删除。')) return;
+            var ids = Array.from(checked).map(function(cb) { return parseInt(cb.value); });
+            var resp = await fetch('/api/projects/batch-delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ids: ids})
+            });
+            if (resp.ok) location.reload();
         }
     </script>
     <script>

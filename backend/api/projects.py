@@ -92,6 +92,43 @@ def delete_project(project_id: int):
     return jsonify({"deleted": True})
 
 
+@projects_bp.route("/batch-delete", methods=["POST"])
+def batch_delete_projects():
+    """
+    批量删除项目
+    ============
+    请求体: { "ids": [1, 2, 3] }
+    返回: { "deleted": 3, "errors": [] }
+    """
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids", [])
+    if not ids or not isinstance(ids, list):
+        return jsonify({"error": "请提供要删除的项目 ID 列表"}), 400
+
+    deleted = 0
+    errors = []
+    for pid in ids:
+        project = db.session.get(Project, pid)
+        if not project:
+            errors.append(f"项目 {pid} 不存在")
+            continue
+        repo_path = project.repo_path
+        source_type = project.source_type
+        for scan in project.scans:
+            for vuln in scan.vulnerabilities:
+                db.session.delete(vuln)
+            db.session.delete(scan)
+        db.session.flush()
+        db.session.delete(project)
+        if source_type == "upload" and repo_path:
+            from utils.archive_handler import cleanup_extracted
+            cleanup_extracted(repo_path)
+        deleted += 1
+
+    db.session.commit()
+    return jsonify({"deleted": deleted, "errors": errors})
+
+
 @projects_bp.route("/upload", methods=["POST"])
 def upload_project():
     """

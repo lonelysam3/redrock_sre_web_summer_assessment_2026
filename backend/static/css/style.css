@@ -951,6 +951,42 @@ code {
 }
 
 /* ================================================================
+   Batch Actions 批量操作
+   ================================================================ */
+.batch-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    background: var(--bg2);
+    border: 1px solid var(--overlay);
+    animation: slideDown 0.3s ease;
+}
+.batch-bar.hidden {
+    display: none;
+}
+.batch-count {
+    color: var(--blue);
+    font-weight: 700;
+    font-size: 0.9em;
+    min-width: 60px;
+}
+.batch-bar .btn {
+    font-size: 0.82em;
+}
+.batch-checkbox {
+    accent-color: var(--blue);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+.table .batch-checkbox {
+    vertical-align: middle;
+}
+
+/* ================================================================
    Upload
    ================================================================ */
 .hint {
