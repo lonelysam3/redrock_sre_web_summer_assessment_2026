@@ -71,6 +71,41 @@
 | 反序列化 | High | — | ✅ | — |
 | 文件上传 | High | — | ✅ | — |
 
+## 版本感知规则引擎
+
+规则引擎将审计规则从扫描器中解耦，根据目标项目的语言版本/标准动态激活和调整规则。
+
+### 设计理念
+
+相同代码在不同语言版本下的安全风险截然不同。例如：
+
+- `preg_replace('/p/e')` — PHP 5.5+ 中 /e 修饰符已废弃，PHP 7.0+ 已移除 → 低于这些版本才是高危
+- `create_function()` — PHP 7.2 废弃，PHP 7.4 移除 → 版本决定了是否需要告警
+- `mysql_query()` — 在 PHP 5.x 是标准 API，在 PHP 7.0+ 是已移除的危险残留
+
+规则引擎根据用户指定（或自动检测）的版本号，只激活与该版本相关的规则，并动态调整严重程度。
+
+### 支持的语言与版本范围
+
+| 语言 | 版本范围 | 关键里程碑 |
+|------|---------|-----------|
+| PHP | 5.0 ~ 8.0 | 5.3 PDO charset / 5.5 preg_replace / 7.0 mysql_* / 8.0 assert |
+| Python | 2.7 ~ 3.13 | 2.7 EOL / 3.6 f-strings / 3.8 walrus operator |
+| C/C++ | C89 ~ C++23 | C99 gets / C11 gets_removed / C++17 filesystem |
+
+### 规则结构
+
+每条规则是一个独立的 `AuditRule` 数据类：
+
+- `min_version` / `max_version` — 控制规则的生效版本范围
+- `default_severity` — 默认严重程度
+- `severity_overrides` — 特定版本下动态调整严重程度（如某 API 在旧版是高危，新版降为 info）
+- `confidence` — 规则置信度 (0~1)
+
+### 自动版本检测
+
+PHP 项目支持从源码自动检测版本：扫描 `composer.json`、特征函数调用、语法特征等，给出最佳匹配版本。用户也可在 Web 界面手动指定。
+
 ## 使用方法
 
 ```bash
@@ -110,6 +145,7 @@ DEEPSEEK_MODEL=deepseek-chat
 | 数据库 | SQLite + SQLAlchemy ORM |
 | AST/CST 解析 | Python AST + tree-sitter (PHP/C/C++) |
 | 污点追踪 | 邻接表 + BFS 路径搜索 + 消毒函数识别 |
+| 规则引擎 | 版本感知规则调度（min/max_version + severity_overrides） |
 | 数据流分析 | 正则模式 + 防护等级评估 + 利用难度判定 |
 | AST 模式分析 | 语义级模式匹配（参数化查询/白名单/反序列化链） |
 | AI 集成 | OpenAI 兼容接口 (DeepSeek/GPT/自定义) |
