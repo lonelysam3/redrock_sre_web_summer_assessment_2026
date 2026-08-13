@@ -33,7 +33,7 @@ class chat_request:
     一次 Chat Completion 请求（不可变）
     ==================================
     
-    model:          模型名称（如 "deepseek-chat", "gpt-4o"）
+    model:          模型名称（如 "deepseek-v4-flash", "gpt-4.1"）
     user_message:   用户消息内容
     system_prompt:  系统提示词（可选）
     temperature:    采样温度（可选，0~2）

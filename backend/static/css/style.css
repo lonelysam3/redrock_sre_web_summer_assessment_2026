@@ -64,6 +64,13 @@
     --glow-red: rgba(248,113,113,0.12);
     --header-gradient: linear-gradient(180deg, rgba(15,23,42,0.95), rgba(30,41,59,0.85));
     --card-gradient: linear-gradient(135deg, rgba(94,234,212,0.04), rgba(15,23,42,0.18), rgba(96,165,250,0.04), rgba(167,139,250,0.03));
+    /* 背景渐变彩带（极光）颜色 */
+    --aurora-blue: rgba(96, 165, 250, 0.16);
+    --aurora-violet: rgba(167, 139, 250, 0.14);
+    --aurora-teal: rgba(94, 234, 212, 0.12);
+    /* 背景装饰：网格线 / 气泡填充 */
+    --deco-line: rgba(148, 163, 184, 0.05);
+    --deco-bubble: rgba(148, 163, 184, 0.10);
 }
 
 /* ================================================================
@@ -107,6 +114,13 @@
     --glow-red: rgba(185,28,28,0.06);
     --header-gradient: linear-gradient(180deg, rgba(254,252,251,0.8), rgba(240,235,227,0.55));
     --card-gradient: linear-gradient(135deg, rgba(232,221,208,0.12), rgba(250,246,241,0.3), rgba(232,221,208,0.08));
+    /* 背景渐变彩带（极光）颜色 — 浅色模式用柔和冷色调（蓝/紫），暖橙在米色底上会显脏 */
+    --aurora-blue: rgba(77, 107, 254, 0.05);
+    --aurora-violet: rgba(124, 107, 254, 0.045);
+    --aurora-teal: rgba(20, 150, 130, 0.04);
+    /* 背景装饰：网格线 / 气泡填充 */
+    --deco-line: rgba(120, 100, 78, 0.06);
+    --deco-bubble: rgba(120, 100, 78, 0.09);
 }
 
 /* ================================================================
@@ -210,14 +224,14 @@ html {
 }
 
 body {
-    font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    font-family: 'HarmonyOS Sans SC', 'MiSans', 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
     background: var(--body-bg);
     color: var(--text);
-    line-height: 1.6;
+    line-height: 1.65;
     min-height: 100vh;
     transition: background-color 0.4s ease, color 0.4s ease;
     position: relative;
-    overflow-x: hidden;
+    overflow-x: clip; /* clip 不创建滚动容器，sticky 头部可正常工作 */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -356,6 +370,191 @@ body {
     animation-duration: 13s;
 }
 
+/* ================================================================
+   背景渐变彩带（极光）— 参考 DeepSeek 官网背景的飘动效果
+   ================================================================
+   三条大尺寸、强模糊、低透明度的渐变飘带，在内容层下方缓慢漂移。
+   动效保守：周期 24s~40s，只做位移/旋转的往复运动。
+   ================================================================ */
+.aurora {
+    position: fixed;
+    inset: -20% -10%;
+    z-index: -1;
+    pointer-events: none;
+    overflow: hidden;
+    filter: blur(90px);
+    -webkit-filter: blur(90px);
+    opacity: 0.55;
+    transition: opacity 0.6s ease;
+}
+.aurora-ribbon {
+    position: absolute;
+    width: 55%;
+    height: 170%;
+    border-radius: 50%;
+    will-change: transform;
+    opacity: 0.9;
+}
+.aurora-ribbon.r1 {
+    top: -45%;
+    left: -10%;
+    background: linear-gradient(120deg, transparent 8%, var(--aurora-blue) 40%, var(--aurora-violet) 65%, transparent 92%);
+    transform: rotate(18deg);
+    animation: auroraDrift1 34s ease-in-out infinite alternate;
+}
+.aurora-ribbon.r2 {
+    top: -30%;
+    right: -18%;
+    background: linear-gradient(240deg, transparent 5%, var(--aurora-teal) 35%, var(--aurora-blue) 62%, transparent 90%);
+    transform: rotate(-22deg);
+    animation: auroraDrift2 40s ease-in-out infinite alternate;
+}
+.aurora-ribbon.r3 {
+    bottom: -55%;
+    left: 22%;
+    background: linear-gradient(15deg, transparent 10%, var(--aurora-violet) 38%, var(--aurora-teal) 66%, transparent 88%);
+    transform: rotate(8deg);
+    animation: auroraDrift3 28s ease-in-out infinite alternate;
+}
+@keyframes auroraDrift1 {
+    0%   { transform: translate(0, 0) rotate(18deg) scale(1); }
+    50%  { transform: translate(9%, 6%) rotate(26deg) scale(1.08); }
+    100% { transform: translate(-4%, -3%) rotate(12deg) scale(0.96); }
+}
+@keyframes auroraDrift2 {
+    0%   { transform: translate(0, 0) rotate(-22deg) scale(1); }
+    50%  { transform: translate(-8%, 7%) rotate(-14deg) scale(1.06); }
+    100% { transform: translate(6%, -5%) rotate(-28deg) scale(0.95); }
+}
+@keyframes auroraDrift3 {
+    0%   { transform: translate(0, 0) rotate(8deg) scale(1); }
+    50%  { transform: translate(-6%, -7%) rotate(16deg) scale(1.1); }
+    100% { transform: translate(8%, 4%) rotate(2deg) scale(0.97); }
+}
+/* 跟随系统减弱动态偏好：关闭飘动 */
+@media (prefers-reduced-motion: reduce) {
+    .aurora-ribbon {
+        animation: none !important;
+    }
+}
+/* 浅色模式：降低整体强度，避免背景被染成橙色块 */
+[data-theme="light"] .aurora {
+    opacity: 0.35;
+}
+
+/* ================================================================
+   背景装饰：气泡 + 网格线 + 装饰线条 + 十字标记
+   ================================================================
+   全部 pointer-events:none，位于内容层之下（z-index:0），
+   透过玻璃卡片可见。动效保守：仅气泡缓慢上浮。
+   ================================================================ */
+.bg-deco {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+/* 蓝图网格线：顶部密度高，向下渐隐 */
+.bg-grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(var(--deco-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--deco-line) 1px, transparent 1px);
+    background-size: 48px 48px;
+    -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 25%, transparent 78%);
+    mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 25%, transparent 78%);
+}
+
+/* 装饰长线：两端淡出的细线 */
+.bg-line {
+    position: absolute;
+    left: -5%;
+    width: 110%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--blue) 45%, var(--violet) 60%, transparent);
+    opacity: 0.14;
+}
+.bg-line.l1 { top: 21%; }
+.bg-line.l2 { top: 64%; }
+.bg-line.lv {
+    top: -5%;
+    left: 14%;
+    width: 1px;
+    height: 110%;
+    background: linear-gradient(180deg, transparent, var(--teal) 40%, transparent);
+}
+
+/* 十字标记：散布的小加号 */
+.bg-plus {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    opacity: 0.14;
+}
+.bg-plus::before,
+.bg-plus::after {
+    content: '';
+    position: absolute;
+    background: var(--subtext);
+    border-radius: 1px;
+}
+.bg-plus::before {
+    left: 6px;
+    top: 0;
+    width: 2px;
+    height: 14px;
+}
+.bg-plus::after {
+    left: 0;
+    top: 6px;
+    width: 14px;
+    height: 2px;
+}
+.bg-plus.p1 { top: 18%; left: 8%; }
+.bg-plus.p2 { top: 55%; right: 12%; }
+.bg-plus.p3 { bottom: 18%; left: 22%; }
+.bg-plus.p4 { top: 32%; right: 5%; opacity: 0.09; }
+
+/* 气泡：玻璃质感圆泡，缓慢上浮 */
+.bubble {
+    position: absolute;
+    bottom: -6%;
+    border-radius: 50%;
+    border: 1px solid var(--glass-border);
+    background:
+        radial-gradient(circle at 32% 28%, var(--deco-bubble), transparent 62%);
+    opacity: 0;
+    animation: bubbleRise linear infinite;
+}
+@keyframes bubbleRise {
+    0%   { transform: translate(0, 0); opacity: 0; }
+    8%   { opacity: 0.55; }
+    50%  { transform: translate(4vw, -52vh); }
+    92%  { opacity: 0.55; }
+    100% { transform: translate(-3vw, -108vh); opacity: 0; }
+}
+.bubble.b1  { left: 6%;  width: 18px; height: 18px; animation-duration: 28s; animation-delay: -6s; }
+.bubble.b2  { left: 14%; width: 10px; height: 10px; animation-duration: 22s; animation-delay: -18s; }
+.bubble.b3  { left: 24%; width: 32px; height: 32px; animation-duration: 36s; animation-delay: -12s; }
+.bubble.b4  { left: 36%; width: 12px; height: 12px; animation-duration: 24s; animation-delay: -2s; }
+.bubble.b5  { left: 47%; width: 22px; height: 22px; animation-duration: 32s; animation-delay: -20s; }
+.bubble.b6  { left: 58%; width: 9px;  height: 9px;  animation-duration: 20s; animation-delay: -8s; }
+.bubble.b7  { left: 69%; width: 26px; height: 26px; animation-duration: 34s; animation-delay: -26s; }
+.bubble.b8  { left: 80%; width: 13px; height: 13px; animation-duration: 23s; animation-delay: -15s; }
+.bubble.b9  { left: 90%; width: 40px; height: 40px; animation-duration: 42s; animation-delay: -30s; }
+.bubble.b10 { left: 95%; width: 8px;  height: 8px;  animation-duration: 19s; animation-delay: -10s; }
+
+/* 跟随系统减弱动态偏好：气泡停止上浮 */
+@media (prefers-reduced-motion: reduce) {
+    .bubble {
+        animation: none !important;
+        opacity: 0.3;
+    }
+}
+
 /* 内容容器 */
 .container {
     max-width: 1200px;
@@ -441,18 +640,70 @@ code {
    Header 顶部导航栏
    ================================================================ */
 .header {
+    width: 100%; /* 显式宽度，保证 100% → 80% 的收拢动画可插值 */
     background: var(--header-gradient);
     backdrop-filter: blur(36px) saturate(1.3);
     -webkit-backdrop-filter: blur(36px) saturate(1.3);
-    border-bottom: 2px solid transparent;
-    border-image: linear-gradient(90deg, var(--teal), var(--blue), var(--violet)) 1;
-    padding: 16px 0;
+    padding: 14px 0;
     margin-bottom: 24px;
-    transition: background 0.4s;
+    transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                border-radius 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                margin 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                padding 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                top 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                background 0.5s ease,
+                box-shadow 0.5s ease,
+                border-color 0.5s ease;
     animation: slideDown 0.5s ease;
-    position: relative;
+    position: sticky;
+    top: 0;
     z-index: 10;
     box-shadow: 0 1px 20px rgba(0,0,0,0.08);
+}
+
+/* 底部渐变条：全宽状态贴边，收拢时随胶囊缩为内宽 80%（不会消失） */
+.header::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--teal), var(--blue), var(--violet));
+    opacity: 0.85;
+    transition: left 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                right 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.5s ease;
+}
+.header.scrolled::after {
+    left: 10%;
+    right: 10%;
+}
+
+/* 滚动后的收拢状态：折叠为 80% 宽圆角玻璃胶囊，圆角与主题切换器一致（20px） */
+.header.scrolled {
+    width: 80%;
+    margin: 12px 10% 24px; /* 左右 10% 可插值 → 居中收缩动画 */
+    top: 12px;
+    padding: 8px 0;       /* 高度同步收紧，形成折叠感 */
+    transform: scale(0.985);
+    border-radius: 20px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    backdrop-filter: blur(32px) saturate(1.7);
+    -webkit-backdrop-filter: blur(32px) saturate(1.7);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+/* 窄屏下胶囊略宽，避免内容拥挤 */
+@media (max-width: 768px) {
+    .header.scrolled {
+        width: 92%;
+        margin-left: 4%;
+        margin-right: 4%;
+    }
 }
 .header .container {
     display: flex;
@@ -462,6 +713,7 @@ code {
 .header h1 {
     font-size: 1.4em;
     font-weight: 800;
+    letter-spacing: -0.02em;
     color: var(--text);
     transition: color 0.4s;
 }
@@ -515,7 +767,7 @@ code {
     backdrop-filter: blur(36px) saturate(1.2);
     -webkit-backdrop-filter: blur(36px) saturate(1.2);
     border-radius: 16px;
-    padding: 24px;
+    padding: 28px;
     margin-bottom: 20px;
     border: 1px solid var(--glass-border);
     box-shadow: var(--card-shadow),
@@ -576,10 +828,11 @@ code {
 .card:nth-child(3) { animation-delay: 0.12s; }
 .card:nth-child(4) { animation-delay: 0.18s; }
 .card h2 {
-    margin-bottom: 16px;
-    font-size: 1.15em;
+    margin-bottom: 20px;
+    font-size: 1.22em;
     color: var(--text);
     font-weight: 700;
+    letter-spacing: -0.01em;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -717,7 +970,7 @@ code {
    ================================================================ */
 .form-row {
     display: flex;
-    gap: 10px;
+    gap: 12px;
     flex-wrap: wrap;
     align-items: center;
 }
@@ -752,7 +1005,7 @@ code {
 }
 .table thead th,
 .table tbody td {
-    padding: 12px 16px;
+    padding: 13px 20px;
     text-align: left;
 }
 .table thead th {
@@ -991,7 +1244,8 @@ code {
    ================================================================ */
 .hint {
     color: var(--subtext);
-    font-size: 0.85em;
+    font-size: 0.88em;
+    line-height: 1.6;
     margin-bottom: 12px;
 }
 .file-input-wrapper {
@@ -1179,6 +1433,8 @@ code {
     font-weight: 800;
     color: var(--text);
     transition: color 0.4s;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
     background: linear-gradient(135deg, var(--text), var(--blue));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;

@@ -1152,4 +1152,3 @@ def detect_cpp_version(source_codes: dict[str, str]) -> str:
         if re.search(pattern, code_only):
             return version
     return "c++98"
-

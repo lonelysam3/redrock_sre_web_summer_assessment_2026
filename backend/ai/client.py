@@ -340,12 +340,23 @@ class AIClient:
             # 无工具调用，解析最终 JSON
             final_result = self._parse_json(response)
             if final_result:
+                if is_tool_call_result(final_result):
+                    # 工具调用格式未被 parse_tool_calls 识别：追加回上下文请求继续
+                    print(f"[MCP] 第 {round_num+1} 轮: 检测到未识别的工具调用格式，请求 AI 继续")
+                    conversation_history = (
+                        conversation_history + "\n\n---\n## 第 {} 轮\n".format(round_num + 1)
+                        + response + "\n\n请基于以上信息继续。如分析完成，直接输出 JSON 结果（不要再用 ```json 包裹）。"
+                    )
+                    final_result = None
+                    continue
                 print(f"[MCP] 第 {round_num+1} 轮: 解析到最终 JSON 结果")
                 break
 
         # 最后一轮后仍尝试解析
         if not final_result and last_response:
-            final_result = self._parse_json(last_response)
+            parsed = self._parse_json(last_response)
+            if parsed and not is_tool_call_result(parsed):
+                final_result = parsed
 
         if tool_rounds_used == 0 and has_tools and not final_result:
             print(f"[MCP] AI 未调用任何工具且未返回有效 JSON，首轮回复前 200 字符: {last_response[:200] if last_response else 'None'}")
@@ -722,6 +733,25 @@ class AIClient:
 # ============================================================================
 
 _client_cache: AIClient | None = None
+
+
+def is_tool_call_result(obj) -> bool:
+    """
+    判断解析结果是否为 MCP 工具调用请求而非漏洞分析结果。
+
+    工具调用形状：{"name": "...", "arguments": {...}}
+    分析结果形状：含 is_vulnerable / root_cause / verdict / fix_recommendation 等字段。
+    用于防止工具调用被误存为 ai_analysis。
+    """
+    if not isinstance(obj, dict):
+        return False
+    if "name" in obj and "arguments" in obj:
+        analysis_keys = (
+            "is_vulnerable", "root_cause", "verdict",
+            "fix_recommendation", "attack_analysis",
+        )
+        return not any(k in obj for k in analysis_keys)
+    return False
 
 
 def get_ai_client() -> AIClient:

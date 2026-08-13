@@ -34,7 +34,7 @@ class open_ai_compatible_provider:
                                  base_url="https://api.deepseek.com")
         provider = open_ai_compatible_provider(config)
         reply = provider.create_chat_completion(chat_request(
-            model="deepseek-chat",
+            model="deepseek-v4-flash",
             user_message="Hello",
         ))
     """

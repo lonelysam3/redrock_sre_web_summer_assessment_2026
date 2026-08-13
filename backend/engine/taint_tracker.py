@@ -56,6 +56,9 @@ class TaintNode:
         is_sink:       是否为危险出口
         code_snippet:  变量定义的代码片段（用于报告展示）
         line_number:   变量定义所在行号
+        sanitized_types: 已被消毒的漏洞类型集合（"all" = 全部类型）
+            用于按漏洞类型区分消毒：htmlspecialchars 只消毒 XSS，
+            不应切断 SQL 注入/命令执行的污点链。
     """
     name: str                          # 变量名
     source_origin: str | None = None   # 来自哪个 Source 函数（仅 source 节点有值）
@@ -64,6 +67,7 @@ class TaintNode:
     is_sink: bool = False              # 是否为 Sink 点
     code_snippet: str = ""             # 变量定义代码片段
     line_number: int = 0               # 变量定义所在行号
+    sanitized_types: set = field(default_factory=set)  # 按类型消毒记录
 
     def __hash__(self):
         # 用 (name, line_number) 作为哈希键，支持同名不同行的变量
@@ -106,8 +110,22 @@ class TaintGraph:
     def add_node(self, node: TaintNode):
         """
         向图中添加一个节点。
-        如果节点名已存在则覆盖，同时初始化邻接表条目。
+        如果节点名已存在则合并标记（而不是覆盖）：
+        后建的 source 节点不应抹掉先前已设的 is_sink 等标记，反之亦然。
         """
+        if node.name in self.nodes:
+            existing = self.nodes[node.name]
+            existing.is_source = existing.is_source or node.is_source
+            existing.is_sink = existing.is_sink or node.is_sink
+            existing.tainted = existing.tainted or node.tainted
+            existing.sanitized_types = existing.sanitized_types | node.sanitized_types
+            if node.source_origin and not existing.source_origin:
+                existing.source_origin = node.source_origin
+            if node.code_snippet:
+                existing.code_snippet = node.code_snippet
+            if node.line_number:
+                existing.line_number = node.line_number
+            return
         self.nodes[node.name] = node
         if node.name not in self.adjacency:
             self.adjacency[node.name] = []
@@ -296,24 +314,39 @@ class TaintTracker:
         # 污点自动传播：如果来源变量已被污染，目标变量也被标记为污染
         if self.graph.nodes[from_var].tainted:
             self.graph.nodes[to_var].tainted = True
+        # 按类型消毒记录也要传播：x 只对 XSS 消毒，y = x 后 y 同样只对 XSS 消毒
+        if self.graph.nodes[from_var].sanitized_types:
+            self.graph.nodes[to_var].sanitized_types |= self.graph.nodes[from_var].sanitized_types
 
-    def sanitize(self, var_name: str, sanitizer_func: str = "") -> None:
+    def sanitize(self, var_name: str, sanitizer_func: str = "",
+                 vuln_types: set | None = None) -> None:
         """
         标记变量已被消毒函数清洗，切断污点传播链。
 
+        vuln_types=None 或 {"all"}：切断所有漏洞类型（原有行为）。
+        指定具体类型时，只切断这些类型的污点链：
+          例如 htmlspecialchars 只消毒 XSS，之后该变量流入
+          system() 仍应报告命令执行漏洞。
+
         调用此方法后：
-          1. 该变量的 tainted 标志设为 False
-          2. 后续从该变量出发的赋值不会再自动传播污点
-          3. analyze() 中会跳过 tainted=False 的 Sink 节点
+          1. 全类型消毒：tainted 设为 False，后续赋值不再传播污点
+          2. 按类型消毒：sanitized_types 记录类型，analyze() 时
+             只跳过对应类型的 Sink
 
         参数:
             var_name:       要清洗的变量名
             sanitizer_func: 消毒函数名（用于调试/报告）
+            vuln_types:     被消毒的漏洞类型集合（None = 全部）
         """
-        if var_name in self.graph.nodes:
-            node = self.graph.nodes[var_name]
+        if var_name not in self.graph.nodes:
+            return
+        node = self.graph.nodes[var_name]
+        if not vuln_types or "all" in vuln_types:
             node.tainted = False
             node.is_source = False  # 不再视为污点源
+            node.sanitized_types = {"all"}
+        else:
+            node.sanitized_types |= set(vuln_types)
 
     def mark_concat(self, result_var: str, parts: list[str],
                     code: str = "", line: int = 0):
@@ -394,9 +427,13 @@ class TaintTracker:
                     continue
                 visited_pairs.add(pair)
 
-                # 关键检查：Sink 变量的污点是否已被消毒函数清除
-                # （sanitize() 方法会设置 tainted=False）
+                # 关键检查 1：Sink 变量是否被全类型消毒
                 if not sink_node.tainted:
+                    continue
+
+                # 关键检查 2：Sink 变量是否被按类型消毒（如 XSS 专用消毒）
+                ski = self.sink_info.get(sink, {})
+                if ski.get("vuln_type", "") in sink_node.sanitized_types:
                     continue
 
                 # 用 BFS 找出所有从 source 到 sink 的路径
@@ -405,6 +442,8 @@ class TaintTracker:
                     continue  # 没有路径，不是漏洞
 
                 # 检查每条路径上的节点是否全都保持污染状态
+                # 注意：只检查"全类型消毒"（tainted=False）的节点；
+                # 按类型消毒的节点（sanitized_types 非空）由 Sink 处检查。
                 for path in paths:
                     # 如果路径上有任何节点的 tainted 被清除（经过了消毒），跳过此路径
                     if any(

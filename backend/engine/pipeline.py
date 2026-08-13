@@ -236,6 +236,12 @@ class AnalysisPipeline:
         final_vulns = self._deduplicate(all_vulns)
         final_vulns = self._filter_no_source(final_vulns, source_code_map)
 
+        # 统一为所有结果补充 CWE 标注（Stage 1 已由扫描器输出，这里补 Stage 3/4）
+        from engine.sinks_py import CWE_BY_TYPE
+        for v in final_vulns:
+            if not v.get("cwe"):
+                v["cwe"] = CWE_BY_TYPE.get(v.get("vuln_type", ""), "")
+
         result.final_vulns = final_vulns
         result.final_count = len(final_vulns)
         print(f"[PIPELINE] 输出: {len(final_vulns)} 个漏洞 "
@@ -246,20 +252,33 @@ class AnalysisPipeline:
     def _ast_findings_to_vulns(self, findings: list, language: str) -> list[dict]:
         """
         将 AST 发现的危险模式转化为漏洞字典。
-        只转化危险模式（is_safe=False），安全模式只用于降级/过滤。
+        只转化真正的危险模式（is_safe=False）；
+        BLACKLIST_FILTER（黑名单过滤）只是弱防护提示，不是漏洞本身，跳过。
         """
         from engine.ast_analyzer import ASTPattern
 
         # 危险模式 → 漏洞类型映射
         PATTERN_TO_VULN = {
-            ASTPattern.BLACKLIST_FILTER: "sql_injection",
             ASTPattern.DANGEROUS_COMBO: "command_execution",
             ASTPattern.EXTRACT_OVERRIDE: "command_execution",
+            ASTPattern.HARDCODED_CREDENTIALS: "hardcoded_credentials",
+            ASTPattern.DEBUG_MODE: "debug_mode",
+        }
+        # 模式 → 默认严重程度（不再一刀切 medium）
+        PATTERN_SEVERITY = {
+            ASTPattern.EXTRACT_OVERRIDE: "high",
+            ASTPattern.STRING_CONCAT_SQL: "high",
+            ASTPattern.DANGEROUS_COMBO: "medium",
+            ASTPattern.HARDCODED_CREDENTIALS: "high",
+            ASTPattern.DEBUG_MODE: "low",
         }
 
         vulns = []
         for f in findings:
             if f.is_safe:
+                continue
+            # 黑名单过滤是"弱防护提示"，不是漏洞，不上报
+            if f.pattern == ASTPattern.BLACKLIST_FILTER:
                 continue
             vuln_type = PATTERN_TO_VULN.get(f.pattern, "command_execution")
             # 取相关漏洞类型中第一个
@@ -272,17 +291,20 @@ class AnalysisPipeline:
                 "extract_override": "变量覆盖风险",
                 "string_concat_sql": "SQL 字符串拼接",
                 "magic_method_chain": "魔术方法链风险",
+                "hardcoded_credentials": "硬编码凭据",
+                "debug_mode": "调试模式开启",
             }
             data_flow_label = pattern_labels.get(
                 f.pattern.value, f"AST模式({f.pattern.value})"
             )
+            severity = PATTERN_SEVERITY.get(f.pattern, "medium")
 
             vulns.append({
                 "file_path": f.file_path,
                 "line_number": f.line_number,
                 "sink_line": f.line_number,
                 "vuln_type": vuln_type,
-                "severity": "medium",
+                "severity": severity,
                 "language": language,
                 "source_code": f.evidence,
                 "sink_code": f.description,
@@ -502,13 +524,19 @@ class AnalysisPipeline:
 
         exts = extensions.get(language, set())
         source_map = {}
+        # 排除目录：依赖/虚拟环境/构建产物等，避免扫描第三方代码产生误报
+        EXCLUDED_DIRS = {
+            "__pycache__", ".git", "vendor", "node_modules", ".venv",
+            "venv", "env", "site-packages", "dist", "build",
+            ".tox", ".mypy_cache", ".pytest_cache", ".eggs",
+        }
 
         try:
             for file_path in Path(project_path).rglob("*"):
                 if file_path.is_file() and file_path.suffix.lower() in exts:
                     # 跳过常见排除目录
                     parts = set(file_path.parts)
-                    if parts & {"__pycache__", ".git", "vendor", "node_modules", ".venv"}:
+                    if parts & EXCLUDED_DIRS:
                         continue
                     try:
                         source_map[str(file_path)] = file_path.read_text(

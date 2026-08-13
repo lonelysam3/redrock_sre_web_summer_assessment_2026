@@ -64,12 +64,14 @@ C_SINKS: list[CSink] = [
     CSink("mkdir", VulnType.PATH_TRAVERSAL, "mkdir() 创建目录", dangerous_param_index=0),
 
     # ============ 任意文件读取 / 写入 ============
-    CSink("read", VulnType.ARBITRARY_FILE_READ, "read() 文件读取"),
-    CSink("fread", VulnType.ARBITRARY_FILE_READ, "fread() 文件读取"),
-    CSink("fgets", VulnType.ARBITRARY_FILE_READ, "fgets() 文件读取"),
-    CSink("fscanf", VulnType.ARBITRARY_FILE_READ, "fscanf() 格式化读取"),
-    CSink("write", VulnType.ARBITRARY_FILE_READ, "write() 文件写入"),
-    CSink("fwrite", VulnType.ARBITRARY_FILE_READ, "fwrite() 文件写入"),
+    # 危险参数是文件描述符/流（fd/FILE*），而不是缓冲区；
+    # 把 buf 也标记为 sink 会产生大量误报。
+    CSink("read", VulnType.ARBITRARY_FILE_READ, "read() 文件读取", dangerous_param_index=0),
+    CSink("fread", VulnType.ARBITRARY_FILE_READ, "fread() 文件读取", dangerous_param_index=3),
+    CSink("fgets", VulnType.ARBITRARY_FILE_READ, "fgets() 文件读取", dangerous_param_index=2),
+    CSink("fscanf", VulnType.ARBITRARY_FILE_READ, "fscanf() 格式化读取", dangerous_param_index=0),
+    CSink("write", VulnType.ARBITRARY_FILE_READ, "write() 文件写入", dangerous_param_index=0),
+    CSink("fwrite", VulnType.ARBITRARY_FILE_READ, "fwrite() 文件写入", dangerous_param_index=3),
 
     # ============ 动态加载（也视为命令执行，可能加载恶意库） ============
     CSink("dlopen", VulnType.COMMAND_EXECUTION, "dlopen() 动态加载"),

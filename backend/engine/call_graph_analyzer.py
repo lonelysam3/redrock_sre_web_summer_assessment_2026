@@ -98,95 +98,88 @@ C_CALL_PATTERN = re.compile(
 # ======================================================================
 
 # 函数名包含这些关键词 → 可能是 Source
+# 注意：只保留高区分度的词，避免把普通函数误标为 source/sink
+# （如 "request" 匹配 request_config() 这类无关函数）
 SOURCE_KEYWORDS = {
     "python": [
-        "request", "get_input", "read_input", "get_param", "get_arg",
-        "get_query", "get_body", "get_json", "get_form", "get_cookie",
-        "parse_input", "recv", "receive", "user_input", "argv",
+        "get_user_input", "user_input", "read_user_input", "get_input",
+        "read_input", "parse_input", "get_param", "get_arg",
+        "get_query_param", "get_body", "get_json", "get_form", "get_cookie",
+        "recv", "receive_input", "argv",
     ],
     "php": [
-        "request", "getinput", "readinput", "getparam", "getarg",
-        "getquery", "getbody", "getjson", "getform", "getcookie",
-        "parseinput", "recv", "receive", "userinput", "upload",
+        "getuserinput", "userinput", "readuserinput", "getinput",
+        "readinput", "parseinput", "getparam", "getarg",
+        "getqueryparam", "getbody", "getjson", "getform", "getcookie",
+        "recv", "receiveinput",
     ],
     "c": [
-        "recv", "receive", "read_input", "get_input", "fgets",
+        "recv", "receive", "read_input", "get_input",
         "scanf", "get_param", "parse_request", "get_query",
         "read_request", "getenv", "argv", "argc",
     ],
     "cpp": [
-        "recv", "receive", "read_input", "get_input", "fgets",
+        "recv", "receive", "read_input", "get_input",
         "scanf", "get_param", "parse_request", "get_query",
         "read_request", "getenv", "argv", "argc",
     ],
 }
 
 # 函数名包含这些关键词 → 可能是 Sink
+# 注意：只保留高区分度的词；"query"/"open"/"read"/"include" 等
+# 过于泛化的词已移除（如 query_cache() 会被误报为 SQL sink）。
 SINK_KEYWORDS = {
     "python": [
-        ("execute", "command_execution"),
-        ("eval", "command_execution"),
-        ("system", "command_execution"),
-        ("subprocess", "command_execution"),
-        ("popen", "command_execution"),
         ("exec_cmd", "command_execution"),
         ("run_cmd", "command_execution"),
-        ("sql", "sql_injection"),
-        ("query", "sql_injection"),
+        ("run_command", "command_execution"),
+        ("shell_exec", "command_execution"),
+        ("system_call", "command_execution"),
+        ("execute_sql", "sql_injection"),
         ("exec_sql", "sql_injection"),
+        ("run_sql", "sql_injection"),
         ("db_query", "sql_injection"),
-        ("fetch_url", "ssrf"),
-        ("request_url", "ssrf"),
-        ("read_file", "arbitrary_file_read"),
-        ("open_file", "path_traversal"),
-        ("write_file", "path_traversal"),
-    ],
-    "php": [
-        ("execute", "command_execution"),
-        ("eval", "command_execution"),
-        ("shell", "command_execution"),
-        ("system", "command_execution"),
-        ("exec_cmd", "command_execution"),
-        ("sql", "sql_injection"),
-        ("query", "sql_injection"),
-        ("exec_sql", "sql_injection"),
-        ("db_query", "sql_injection"),
-        ("fetch_url", "ssrf"),
-        ("request_url", "ssrf"),
-        ("read_file", "arbitrary_file_read"),
-        ("open_file", "path_traversal"),
-        ("include", "path_traversal"),
-        ("require", "path_traversal"),
+        ("sql_query", "sql_injection"),
         ("unserialize", "deserialization"),
         ("deserialize", "deserialization"),
-        ("upload", "file_upload"),
-        ("move_upload", "file_upload"),
-        ("echo_output", "xss"),
-        ("render_output", "xss"),
+        ("fetch_url", "ssrf"),
+        ("request_url", "ssrf"),
+    ],
+    "php": [
+        ("exec_cmd", "command_execution"),
+        ("run_cmd", "command_execution"),
+        ("run_command", "command_execution"),
+        ("shell_exec", "command_execution"),
+        ("system_call", "command_execution"),
+        ("execute_sql", "sql_injection"),
+        ("exec_sql", "sql_injection"),
+        ("run_sql", "sql_injection"),
+        ("db_query", "sql_injection"),
+        ("sql_query", "sql_injection"),
+        ("unserialize", "deserialization"),
+        ("deserialize", "deserialization"),
+        ("fetch_url", "ssrf"),
+        ("request_url", "ssrf"),
     ],
     "c": [
-        ("exec", "command_execution"),
-        ("system", "command_execution"),
-        ("popen", "command_execution"),
-        ("spawn", "command_execution"),
-        ("sql", "sql_injection"),
-        ("query", "sql_injection"),
-        ("connect", "ssrf"),
-        ("fopen", "path_traversal"),
-        ("open", "path_traversal"),
-        ("read", "arbitrary_file_read"),
+        ("exec_cmd", "command_execution"),
+        ("run_cmd", "command_execution"),
+        ("shell_exec", "command_execution"),
+        ("system_call", "command_execution"),
+        ("execute_sql", "sql_injection"),
+        ("exec_sql", "sql_injection"),
+        ("db_query", "sql_injection"),
+        ("sql_query", "sql_injection"),
     ],
     "cpp": [
-        ("exec", "command_execution"),
-        ("system", "command_execution"),
-        ("popen", "command_execution"),
-        ("spawn", "command_execution"),
-        ("sql", "sql_injection"),
-        ("query", "sql_injection"),
-        ("connect", "ssrf"),
-        ("fopen", "path_traversal"),
-        ("open", "path_traversal"),
-        ("read", "arbitrary_file_read"),
+        ("exec_cmd", "command_execution"),
+        ("run_cmd", "command_execution"),
+        ("shell_exec", "command_execution"),
+        ("system_call", "command_execution"),
+        ("execute_sql", "sql_injection"),
+        ("exec_sql", "sql_injection"),
+        ("db_query", "sql_injection"),
+        ("sql_query", "sql_injection"),
     ],
 }
 
@@ -234,10 +227,16 @@ INLINE_SINK_PATTERNS = {
     "python": [
         (r'os\.system\s*\(', "Command execution", "command_execution"),
         (r'subprocess\.(?:call|run|Popen)\s*\(', "Subprocess", "command_execution"),
-        (r'eval\s*\(', "Eval", "command_execution"),
-        (r'exec\s*\(', "Exec", "command_execution"),
-        (r'\.execute\s*\(', "SQL execute", "sql_injection"),
+        (r'eval\s*\(', "Eval", "code_injection"),
+        (r'exec\s*\(', "Exec", "code_injection"),
+        (r'compile\s*\(', "Compile", "code_injection"),
         (r'(?:open|builtins\.open)\s*\(', "File open", "path_traversal"),
+        (r'(?:pickle\.loads|pickle\.load|yaml\.load|yaml\.unsafe_load|marshal\.loads)\s*\(',
+         "Deserialization", "deserialization"),
+        (r'(?:lxml\.etree|ElementTree|minidom)\.(?:parse|fromstring|parseString)\s*\(',
+         "XML parse", "xxe"),
+        (r'(?:redirect|HttpResponseRedirect|RedirectResponse)\s*\(', "Redirect", "open_redirect"),
+        (r'render_template_string\s*\(', "SSTI", "ssti"),
         (r'requests\.(?:get|post|put|delete)\s*\(', "HTTP request", "ssrf"),
     ],
     "c": [
@@ -257,11 +256,16 @@ SEVERITY_MAP = {
     "command_execution": "critical",
     "sql_injection": "high",
     "deserialization": "high",
+    "insecure_deserialization": "high",
+    "code_injection": "critical",
     "file_upload": "high",
     "ssrf": "high",
     "path_traversal": "medium",
     "arbitrary_file_read": "medium",
     "xss": "low",
+    "xxe": "high",
+    "open_redirect": "medium",
+    "ssti": "critical",
 }
 
 
@@ -342,11 +346,17 @@ class CallGraphAnalyzer:
                     functions[name] = FunctionNode(
                         name=name, file_path=file_path, line_number=line_num
                     )
-                self._classify_function(name, source, file_path, language, functions)
+                # 只取该函数自己的函数体做角色判定，
+                # 避免"文件里有一处 $_GET，全部函数都变 Source"的误报
+                body = self._extract_function_body(source, name, language)
+                self._classify_function(name, body, file_path, language, functions)
 
-    def _classify_function(self, name: str, source: str, file_path: str,
+    def _classify_function(self, name: str, body: str, file_path: str,
                            language: str, functions: dict[str, FunctionNode]):
-        """标注函数角色：Source / Sink / Pass-through"""
+        """
+        标注函数角色：Source / Sink / Pass-through。
+        只在函数体（body）内搜索模式，而不是整个文件。
+        """
         func = functions[name]
         name_lower = name.lower()
 
@@ -366,12 +376,12 @@ class CallGraphAnalyzer:
 
         # 函数体内检测 Source/Sink 模式（更精确）
         for pattern, label in INLINE_SOURCE_PATTERNS.get(language, []):
-            if re.search(pattern, source, re.IGNORECASE):
+            if re.search(pattern, body, re.IGNORECASE):
                 func.is_source = True
                 func.source_labels.append(label)
 
         for pattern, label, vuln_type in INLINE_SINK_PATTERNS.get(language, []):
-            if re.search(pattern, source, re.IGNORECASE):
+            if re.search(pattern, body, re.IGNORECASE):
                 func.is_sink = True
                 func.sink_labels.append(label)
                 if not func.vuln_type:

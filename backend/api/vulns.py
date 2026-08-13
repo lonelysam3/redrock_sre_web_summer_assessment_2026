@@ -159,10 +159,11 @@ def analyze_vuln(vuln_id: int):
     # 如果 AI 返回了结果，写入数据库
     if result:
         import json
+        from ai.client import is_tool_call_result
         r = result
         if isinstance(r, list):
             r = r[0] if r and isinstance(r[0], dict) else None
-        if isinstance(r, dict):
+        if isinstance(r, dict) and not is_tool_call_result(r):
             v.ai_analysis = json.dumps(r, ensure_ascii=False)
             v.ai_is_vulnerable = r.get("is_vulnerable", "uncertain")
             v.ai_severity = r.get("severity", v.severity)

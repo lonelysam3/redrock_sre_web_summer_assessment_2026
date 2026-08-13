@@ -146,7 +146,7 @@ class AISettings(db.Model):
     id = db.Column(db.Integer, primary_key=True, default=1)                # 固定为 1，保证单例
     api_key = db.Column(db.String(200), default="")                        # API 密钥（存储在本地数据库中）
     base_url = db.Column(db.String(300), default="https://api.deepseek.com")  # API 基础地址
-    model = db.Column(db.String(100), default="deepseek-chat")             # 模型名称
+    model = db.Column(db.String(100), default="deepseek-v4-flash")             # 模型名称
     provider = db.Column(db.String(50), default="deepseek")                # 提供方标识: deepseek/openai/custom
     updated_at = db.Column(db.DateTime, default=now_cn)           # 最后更新时间
 

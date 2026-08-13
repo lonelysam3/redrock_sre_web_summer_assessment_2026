@@ -40,7 +40,7 @@ from pathlib import Path
 
 from engine.taint_tracker import TaintTracker   # 污点追踪核心
 from engine.sources_py import PYTHON_SOURCES     # Python Source 点列表
-from engine.sinks_py import PYTHON_SINKS, VulnType  # Python Sink 点列表和漏洞类型枚举
+from engine.sinks_py import PYTHON_SINKS, VulnType, CWE_BY_TYPE  # Sink 点列表、漏洞类型枚举、CWE 映射
 
 
 # ---- 漏洞严重程度映射表 ----
@@ -51,22 +51,36 @@ SEVERITY_MAP = {
     VulnType.SSRF: "high",                     # SSRF：可探测内网、绕过防火墙
     VulnType.PATH_TRAVERSAL: "medium",         # 路径穿越：可读取任意文件
     VulnType.ARBITRARY_FILE_READ: "medium",    # 任意文件读取：与路径穿越类似
+    VulnType.INSCURE_DESERIALIZATION: "high",  # 反序列化：可 RCE
+    VulnType.CODE_INJECTION: "critical",       # 代码注入
+    VulnType.OPEN_REDIRECT: "medium",          # 开放重定向
+    VulnType.XXE: "high",                      # XXE
+    VulnType.XSS: "low",                       # 反射型 XSS
+    VulnType.SSTI: "critical",                 # 模板注入：可 RCE
+    VulnType.HARDCODED_CREDENTIALS: "high",    # 硬编码凭据
+    VulnType.DEBUG_MODE: "low",                # 调试模式开启
 }
 
+# eval/exec/compile 等代码执行 sink：按 CWE-94（代码注入）标注
+CODE_EXEC_SINK_MARKERS = ("eval", "exec", "compile")
+
 # ---- 消毒函数集合 ----
-# 这些函数可以将污点数据"清洗"为安全数据。
-# 类型强制转换（int/float/bool/str）是通用消毒，可阻断所有漏洞类型。
-# HTML 转义函数只阻断 XSS，对 SQL 注入/命令执行无效 — 但当前框架暂不区分漏洞类型，
-# 实际使用中消毒后的变量通常不会再流入敏感上下文，因此统一切断污点链。
-PYTHON_SANITIZER_NAMES = {
-    # 通用类型强制转换
-    "builtins.int", "builtins.float", "builtins.str", "builtins.bool", "builtins.bytes",
-    # XSS 消毒
-    "html.escape", "cgi.escape", "markupsafe.escape", "bleach.clean",
-    # 命令注入消毒
-    "shlex.quote",
-    # 路径消毒
-    "os.path.basename",
+# 每个函数对应它能防护的漏洞类型集合：
+#   - None = 全类型消毒（类型转换等）
+#   - 具体类型 = 只阻断该类漏洞（如 html.escape 只防 XSS）
+PYTHON_SANITIZER_NAMES: dict[str, set | None] = {
+    # 通用类型强制转换：把输入变成纯数字，对注入类漏洞普遍有效
+    # str()/bytes() 不消毒任何东西，不作为消毒函数（避免误判漏报）
+    "builtins.int": None, "builtins.float": None, "builtins.bool": None,
+    # XSS 消毒：只阻断 XSS
+    "html.escape": {"xss"},
+    "cgi.escape": {"xss"},
+    "markupsafe.escape": {"xss"},
+    "bleach.clean": {"xss"},
+    # 命令注入消毒：只阻断命令执行
+    "shlex.quote": {"command_execution"},
+    # 路径消毒：阻断路径穿越/任意文件读取
+    "os.path.basename": {"path_traversal", "arbitrary_file_read"},
 }
 
 
@@ -87,8 +101,17 @@ class PythonScanner:
     SKIP_DIRS = {
         "__pycache__", ".git", ".venv", "venv", "env",
         "node_modules", ".tox", ".mypy_cache", ".pytest_cache",
-        "dist", "build", "site-packages",
+        "dist", "build", "site-packages", "vendor",
     }
+
+    # 数据库连接工厂函数：返回值标记为 db.Connection
+    DB_CONNECT_FUNCS = {
+        "sqlite3.connect", "pymysql.connect", "MySQLdb.connect",
+        "psycopg2.connect", "psycopg.connect", "mysql.connector.connect",
+        "asyncpg.connect", "aiomysql.connect",
+    }
+    # 数据库对象基座：obj.cursor() 的 obj 解析到这些时，cursor 标记为 db.Cursor
+    DB_OBJECT_BASES = {"django.db.connection", "sqlalchemy.Engine"}
 
     def __init__(self):
         """
@@ -136,6 +159,9 @@ class PythonScanner:
             if sk.vuln_type.value not in self.sink_map:
                 self.sink_map[sk.vuln_type.value] = []
             self.sink_map[sk.vuln_type.value].append(info)
+
+        # 当前文件内的局部类型推断：变量名 → 类型（db.Connection / db.Cursor 等）
+        self._local_types: dict[str, str] = {}
 
     # ========================================================================
     # 公开接口
@@ -206,6 +232,9 @@ class PythonScanner:
                     name = alias.asname or alias.name
                     import_aliases[name] = f"{module}.{alias.name}"
 
+        # ---- 3.5 构建局部类型推断表（数据库连接/游标） ----
+        self._local_types = self._build_local_types(tree, import_aliases)
+
         # ---- 4. 创建污点追踪器 ----
         tracker = TaintTracker(file_path=file_path)
 
@@ -229,10 +258,40 @@ class PythonScanner:
         """
         遍历 AST 找出所有 Source 点（用户输入入口）。
 
-        对每个函数调用检查是否匹配已知的 Source 函数，
+        对每个函数调用（或 dict 下标访问）检查是否匹配已知的 Source 函数，
         匹配成功则标记被赋值的变量为污点源。
         """
         for node in ast.walk(tree):
+            # ---- dict 下标访问：request.args['name'] / request.GET['id'] ----
+            if isinstance(node, ast.Subscript):
+                chain = self._resolve_attr_chain(node.value, aliases)
+                key = f"{chain}.__getitem__"
+                if key in self.source_map or chain in self.source_map:
+                    src_key = key if key in self.source_map else chain
+                    var_name = self._make_var_name(node)  # 确定性匿名名，与 _extract_names 一致
+                    code = ast.get_source_segment(source_code, node) or ""
+                    tracker.mark_source(
+                        var_name,
+                        source_func=src_key,
+                        code=code,
+                        line=node.lineno,
+                    )
+                continue
+
+            # ---- 属性型 source：request.data / request.headers / sys.argv ----
+            if isinstance(node, ast.Attribute):
+                chain = self._resolve_attr_chain(node, aliases)
+                if chain in self.source_map:
+                    var_name = self._make_var_name(node)  # 确定性匿名名
+                    code = ast.get_source_segment(source_code, node) or ""
+                    tracker.mark_source(
+                        var_name,
+                        source_func=chain,
+                        code=code,
+                        line=node.lineno,
+                    )
+                continue
+
             if not isinstance(node, ast.Call):
                 continue  # 只关心函数调用
 
@@ -259,7 +318,8 @@ class PythonScanner:
 
         策略：
           1. 先用 import 别名解析完整路径，查全限定名
-          2. 再用短名（最后两段）查表
+          2. 再用后缀匹配（短名）查表 —— 支持 request.GET.get('x')
+             这类 request 是函数参数（非 import）的写法
 
         返回:
             str | None: 匹配到的完整 Source 名，或 None（不匹配）
@@ -269,10 +329,14 @@ class PythonScanner:
         if exact and exact in self.source_map:
             return exact
 
-        # 策略 2：短名匹配（忽略 import 前缀）
+        # 策略 2：后缀匹配（忽略 import 前缀，支持函数参数形式）
         short_key = self._resolve_short_call(node)
-        if short_key and short_key in self.source_map:
-            return self.source_map[short_key].get("module", "") + "." + self.source_map[short_key]["func"]
+        if short_key:
+            # 按长度降序匹配，优先更长的后缀（更具体）
+            for suffix in sorted(self.source_map.keys(), key=len, reverse=True):
+                if short_key.endswith(suffix):
+                    info = self.source_map[suffix]
+                    return f"{info['module']}.{info['func']}"
 
         return None
 
@@ -280,25 +344,25 @@ class PythonScanner:
     # Sink 点扫描
     # ========================================================================
 
+    # 数据库命名变量上的 execute 系列（后缀回退）：
+    #   cursor.execute / cur.execute / conn.execute / db.execute ...
+    DB_EXEC_BASES = {
+        "c", "cur", "cursor", "curs", "conn", "connection",
+        "db", "database", "con",
+    }
+
     def _visit_sinks(self, tree: ast.AST, tracker: TaintTracker,
                      source_code: str, aliases: dict[str, str]):
         """
         遍历 AST 找出所有 Sink 点（危险函数调用）。
 
-        匹配策略：仅使用 exact（import别名解析后全名）和 short_key（短名）匹配，
-        不使用裸函数名回退匹配（func_name == sk['func']）。
-
-        设计权衡：
-          删除裸名回退后，以下模式会漏报（False Negative）：
-            db = sqlite3.connect(...); cursor = db.cursor()
-            cursor.execute(user_input)  # cursor 不在 import 别名表中
-          这是因为 cursor 来自工厂方法返回值，单文件静态分析无法做类型推断。
-          要解决此问题需要跨语句返回值追踪（type inference），属于 v3 功能。
-          但此改动消除了最大的误报源（任意 .format() .execute() .get() .post() 等
-          被跨模块误匹配），FN/FP 权衡显著偏向减少误报。
-
-        对每个函数调用检查是否匹配已知的 Sink 函数，
-        匹配成功则标记传入的变量为危险出口。
+        匹配策略：
+          1. exact（import别名解析后全名）
+          2. short_key（短名）
+          3. 局部类型推断（local_types）：conn.cursor() 返回的游标变量
+             经 _build_local_types 标记为 db.Cursor，cur.execute() 命中 sink
+          4. 后缀回退：数据库命名变量（cursor/conn/db 等）上的 execute 系列、
+             session.execute、objects.raw
         """
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -313,6 +377,13 @@ class PythonScanner:
             exact = self._resolve_full_call(node, aliases)
             short_key = self._resolve_short_call(node)
 
+            # Django ORM raw()：User.objects.raw(tainted_sql)
+            if func_name == "raw" and short_key.endswith("objects.raw"):
+                sk = {"module": "django.db.models.query", "func": "raw",
+                      "dangerous_param_index": 0}
+                self._mark_sink(node, tracker, source_code, sk, "sql_injection")
+                continue
+
             # 遍历所有漏洞类型的 Sink 列表
             for vuln_type, sinks in self.sink_map.items():
                 for sk in sinks:
@@ -326,13 +397,110 @@ class PythonScanner:
                         self._mark_sink(node, tracker, source_code, sk, vuln_type)
                         break  # 匹配成功，跳过同类其他 Sink
 
+            # ---- 后缀回退（仅 SQL 执行，命名空间收窄防止误报） ----
+            if func_name in ("execute", "executemany", "executescript"):
+                base = self._sink_base_name(node)
+                if base in self.DB_EXEC_BASES:
+                    sk = {"module": "db", "func": func_name,
+                          "dangerous_param_index": 0}
+                    self._mark_sink(node, tracker, source_code, sk, "sql_injection")
+                    continue
+            if func_name == "execute" and short_key.endswith("session.execute"):
+                sk = {"module": "sqlalchemy.session", "func": "execute",
+                      "dangerous_param_index": 0}
+                self._mark_sink(node, tracker, source_code, sk, "sql_injection")
+
+    def _sink_base_name(self, node: ast.Call) -> str:
+        """提取调用对象的根变量名：cursor.execute → cursor；db.session.execute → db。"""
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            return self._name_of(func.value) or ""
+        return ""
+
+    def _build_local_types(self, tree: ast.AST, aliases: dict[str, str]) -> dict[str, str]:
+        """
+        构建局部类型推断表：变量名 → 类型。
+
+        两趟扫描：
+          第一趟：conn = sqlite3.connect()/pymysql.connect() 等 → "db.Connection"
+                  engine = sqlalchemy.create_engine()          → "sqlalchemy.Engine"
+                  conn = django.db.connection（别名）            → "django.db.connection"
+          第二趟：cur = conn.cursor() / with conn.cursor() as cur → "db.Cursor"
+
+        这样 cur.execute(tainted) 就能解析为 db.Cursor.execute 命中 sink。
+        """
+        local: dict[str, str] = {}
+
+        def resolve(expr):
+            """解析表达式为类型名：优先局部类型，其次 import 别名。"""
+            return self._resolve_attr_chain(expr, aliases, local)
+
+        # ---- 第一趟：连接对象 ----
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                factory = resolve(node.value.func)
+                if factory in self.DB_CONNECT_FUNCS or factory.endswith(".connect"):
+                    for t in self._extract_target_names(node.targets):
+                        local[t] = "db.Connection"
+                elif factory in ("sqlalchemy.create_engine",):
+                    for t in self._extract_target_names(node.targets):
+                        local[t] = "sqlalchemy.Engine"
+            elif isinstance(node, ast.Assign) and not isinstance(node.value, ast.Call):
+                resolved = resolve(node.value)
+                if resolved in self.DB_OBJECT_BASES:
+                    for t in self._extract_target_names(node.targets):
+                        local[t] = resolved
+
+        # ---- 第二趟：游标对象 ----
+        def cursor_base(expr) -> str:
+            """obj.cursor() 的 obj 解析结果（可解析出 db 基座则返回基座类型）"""
+            return resolve(expr)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                func = node.value.func
+                if isinstance(func, ast.Attribute) and func.attr == "cursor":
+                    base = cursor_base(func.value)
+                    if (base in self.DB_OBJECT_BASES or base == "db.Connection"
+                            or base in self.DB_CONNECT_FUNCS or base.endswith("Connection")):
+                        for t in self._extract_target_names(node.targets):
+                            local[t] = "db.Cursor"
+            elif isinstance(node, ast.With):
+                for item in node.items:
+                    if item.optional_vars and isinstance(item.context_expr, ast.Call):
+                        func = item.context_expr.func
+                        if isinstance(func, ast.Attribute) and func.attr == "cursor":
+                            base = cursor_base(func.value)
+                            if (base in self.DB_OBJECT_BASES or base == "db.Connection"
+                                    or base in self.DB_CONNECT_FUNCS or base.endswith("Connection")):
+                                local[self._name_of(item.optional_vars) or ""] = "db.Cursor"
+
+        return local
+
     def _mark_sink(self, node: ast.Call, tracker: TaintTracker,
                    source_code: str, sk: dict, vuln_type: str):
         """
         标记一个 AST 调用节点为 Sink 点。
 
         提取危险参数中的变量名，逐个标记为 Sink。
+
+        subprocess 列表形式（无 shell）不构成命令注入：
+          subprocess.run(['ping', ip])   —— 参数列表形式，无 shell 解析，安全
+          subprocess.run(cmd, shell=True) —— 字符串形式，可注入
         """
+        # subprocess 列表形式豁免（列表/元组首参 + 无 shell=True）
+        if sk.get("module", "").startswith("subprocess") and node.args:
+            first_arg = node.args[0]
+            if isinstance(first_arg, (ast.List, ast.Tuple)):
+                # 检查是否有 shell=True
+                shell_true = any(
+                    isinstance(kw, ast.keyword) and kw.arg == "shell"
+                    and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                    for kw in node.keywords
+                )
+                if not shell_true:
+                    return
+
         arg_idx = sk.get("dangerous_param_index", 0)   # 获取危险参数索引
         arg_vars = self._extract_arg_vars(node, arg_idx)  # 提取该参数中的变量名
         code = ast.get_source_segment(source_code, node) or ""
@@ -370,6 +538,14 @@ class PythonScanner:
                         code = ast.get_source_segment(source_code, node) or ""
                         tracker.mark_assign(target, val, reason="assignment",
                                             code=code, line=node.lineno)
+                # dict 访问传播：x = d['k'] / x = d.get('k')
+                # 若 d 已被污染，则 x 也污染（字典/对象取值传播）
+                base_var = self._dict_access_base(node.value)
+                if base_var:
+                    for target in targets:
+                        code = ast.get_source_segment(source_code, node) or ""
+                        tracker.mark_assign(target, base_var, reason="dict_access",
+                                            code=code, line=node.lineno)
                 # 消毒函数检测：x = int(y), x = html.escape(y) 等
                 self._check_sanitizer(node.value, targets, tracker, aliases or {})
 
@@ -402,18 +578,38 @@ class PythonScanner:
         检查赋值的右侧表达式是否为消毒函数调用。
         如果是，则对被赋值的变量调用 tracker.sanitize() 切断污点链。
 
+        按漏洞类型区分消毒：html.escape 只消毒 XSS，
+        shlex.quote 只消毒命令执行，int() 消毒全部注入类漏洞。
+
         示例:
-            x = int(user_input)      → sanitize("x")
-            name = html.escape(raw)  → sanitize("name")
+            x = int(user_input)      → 全类型消毒 "x"
+            name = html.escape(raw)  → 只对 XSS 消毒 "name"
         """
         if not isinstance(value_node, ast.Call):
             return
         sanitizer_full = self._resolve_full_call(value_node, aliases)
         sanitizer_short = self._resolve_short_call(value_node)
-        if sanitizer_full in PYTHON_SANITIZER_NAMES or sanitizer_short in PYTHON_SANITIZER_NAMES:
-            sanitizer_name = sanitizer_full or sanitizer_short
+        key = sanitizer_full if sanitizer_full in PYTHON_SANITIZER_NAMES else sanitizer_short
+        if key in PYTHON_SANITIZER_NAMES:
+            vuln_types = PYTHON_SANITIZER_NAMES[key]
             for target in targets:
-                tracker.sanitize(target, sanitizer_name)
+                tracker.sanitize(target, key, vuln_types=vuln_types)
+
+    def _dict_access_base(self, value_node: ast.expr) -> str:
+        """
+        提取字典/对象访问的基座变量名：
+          d['k']        → d
+          d.get('k')    → d
+          d.get('k', 0) → d
+        其它表达式返回空字符串。
+        """
+        if isinstance(value_node, ast.Subscript):
+            return self._name_of(value_node.value) or ""
+        if isinstance(value_node, ast.Call):
+            func = value_node.func
+            if isinstance(func, ast.Attribute) and func.attr == "get":
+                return self._name_of(func.value) or ""
+        return ""
 
     # ========================================================================
     # 名称解析器（应用 import 别名）
@@ -465,20 +661,25 @@ class PythonScanner:
             return f"{self._resolve_attr_chain_short(func.value)}.{func.attr}"
         return ""
 
-    def _resolve_attr_chain(self, node: ast.expr, aliases: dict[str, str]) -> str:
+    def _resolve_attr_chain(self, node: ast.expr, aliases: dict[str, str],
+                            local_types: dict[str, str] | None = None) -> str:
         """
-        递归解析属性链，应用 import 别名。
+        递归解析属性链，应用 import 别名和局部类型推断。
 
         示例:
             request.args  →  "flask.request.args"（因为 request 映射到 flask.request）
+            cur           →  "db.Cursor"（cur = conn.cursor() 的局部类型）
         """
+        if local_types is None:
+            local_types = getattr(self, "_local_types", {})
         if isinstance(node, ast.Name):
-            return aliases.get(node.id, node.id)  # 有别名用别名，无则用原名
+            # 优先级：import 别名 > 局部类型 > 原名
+            return aliases.get(node.id, local_types.get(node.id, node.id))
         if isinstance(node, ast.Attribute):
-            return f"{self._resolve_attr_chain(node.value, aliases)}.{node.attr}"
+            return f"{self._resolve_attr_chain(node.value, aliases, local_types)}.{node.attr}"
         if isinstance(node, ast.Call):
             # 链式调用：func().attr
-            return self._resolve_attr_chain(node.func, aliases)
+            return self._resolve_attr_chain(node.func, aliases, local_types)
         return "unknown"
 
     def _resolve_attr_chain_short(self, node: ast.expr) -> str:
@@ -531,28 +732,38 @@ class PythonScanner:
         """
         获取当前 AST 节点的赋值目标变量名。
 
-        向上查找父节点，判断当前调用是否在赋值语句右侧：
-          - x = func()     → 目标变量 "x"
-          - x: str = func() → 目标变量 "x"
-          - 独立调用 func() → 生成匿名变量名
+        向上查找父节点链（穿过嵌套调用），判断当前调用是否在赋值语句右侧：
+          - x = func()         → 目标变量 "x"
+          - x = html.escape(input())  → 内层 input() 的目标也是 "x"
+          - x: str = func()    → 目标变量 "x"
+          - 独立调用 func()     → 生成匿名变量名
 
         返回:
             str: 变量名（可能是匿名的）
         """
-        parent = getattr(node, "_parent", None)
-        if parent is None:
+        current = node
+        for _ in range(6):  # 最多向上穿透 6 层（嵌套调用链）
+            parent = getattr(current, "_parent", None)
+            if parent is None:
+                return self._make_var_name(node)
+
+            if isinstance(parent, ast.Assign):
+                # x = func() → 提取 x
+                names = self._extract_target_names(parent.targets)
+                return names[0] if names else self._make_var_name(node)
+
+            if isinstance(parent, ast.AnnAssign):
+                # x: str = func() → 提取 x
+                return self._name_of(parent.target) or self._make_var_name(node)
+
+            if isinstance(parent, ast.Call):
+                # 嵌套调用：func2(func1())，继续向上找赋值目标
+                current = parent
+                continue
+
+            # 遇到其它语句（如 return/参数传递），无法确定赋值目标
             return self._make_var_name(node)
 
-        if isinstance(parent, ast.Assign):
-            # x = func() → 提取 x
-            names = self._extract_target_names(parent.targets)
-            return names[0] if names else self._make_var_name(node)
-
-        if isinstance(parent, ast.AnnAssign):
-            # x: str = func() → 提取 x
-            return self._name_of(parent.target) or self._make_var_name(node)
-
-        # 无法判断赋值目标（如独立调用或作为参数传递），生成匿名变量名
         return self._make_var_name(node)
 
     def _make_var_name(self, node: ast.AST) -> str:
@@ -598,6 +809,17 @@ class PythonScanner:
         if isinstance(node, ast.Name):
             # 简单变量引用
             return [node.id]
+
+        if isinstance(node, ast.Attribute):
+            # 属性访问：request.data / sys.argv
+            # 返回确定性匿名名，与 _visit_sources 中属性型 source 的标记一致
+            return [self._make_var_name(node)]
+
+        if isinstance(node, ast.Subscript):
+            # dict 下标访问：request.args['x']
+            # 返回确定性匿名名，与 _visit_sources 中 mark_source 使用的
+            # _get_assigned_var/_make_var_name 生成的名字一致
+            return [self._make_var_name(node)]
 
         if isinstance(node, ast.BinOp):
             # 二元运算：a + b, a * b 等
@@ -693,17 +915,26 @@ class PythonScanner:
             except (ValueError, KeyError):
                 severity = "medium"  # 未知类型默认为中等
 
+            # CWE 标注：eval/exec/compile 等代码执行 sink 报 CWE-94，其余按类型映射
+            sink_func = r.get("sink_func", "") or ""
+            cwe = CWE_BY_TYPE.get(vt, "")
+            if vt == "command_execution" and any(
+                m in sink_func.lower() for m in CODE_EXEC_SINK_MARKERS
+            ):
+                cwe = "CWE-94"
+
             results.append({
                 "file_path": file_path,
                 "line_number": r.get("sink_line", r.get("source_line", 0)),  # 优先使用 Sink 行号
                 "vuln_type": vt,
                 "severity": severity,
+                "cwe": cwe,
                 "language": "python",
                 "source_code": r.get("source_code", ""),     # Source 点代码
                 "sink_code": r.get("sink_code", ""),         # Sink 点代码
                 "data_flow": r.get("data_flow", ""),         # 数据流路径
                 "source_func": r.get("source_func", ""),     # Source 函数名
-                "sink_func": r.get("sink_func", ""),         # Sink 函数名
+                "sink_func": sink_func,                       # Sink 函数名
                 "source_line": r.get("source_line", 0),      # Source 行号
                 "sink_line": r.get("sink_line", 0),          # Sink 行号
             })

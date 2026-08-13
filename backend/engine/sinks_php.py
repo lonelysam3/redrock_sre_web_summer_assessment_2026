@@ -94,20 +94,19 @@ PHP_SINKS: list[PHPSink] = [
             "call_user_func() — 动态函数调用", 0),
 
     # ============ SSRF 服务端请求伪造 ============
-    PHPSink("file_get_contents", VulnType.SSRF.value,
-            "file_get_contents() — 可读取远程 URL（SSRF 高危）", 0),
+    # 注意：file_get_contents / fopen / readfile 的路径可控问题归入
+    # PATH_TRAVERSAL（避免同一调用重复报告两种类型），这里只保留
+    # 明确的网络请求类 sink。
     PHPSink("curl_exec", VulnType.SSRF.value,
             "curl_exec() — cURL 执行请求", 0),
     PHPSink("curl_multi_exec", VulnType.SSRF.value,
             "curl_multi_exec() — cURL 并发执行", 0),
-    PHPSink("fopen", VulnType.SSRF.value,
-            "fopen() — 可打开远程 URL", 0),
-    PHPSink("readfile", VulnType.SSRF.value,
-            "readfile() — 读取文件并输出（支持远程）", 0),
     PHPSink("fsockopen", VulnType.SSRF.value,
             "fsockopen() — 打开 socket 连接", 0),
     PHPSink("stream_socket_client", VulnType.SSRF.value,
             "stream_socket_client() — 创建 socket 客户端", 0),
+    PHPSink("pfsockopen", VulnType.SSRF.value,
+            "pfsockopen() — 持久 socket 连接", 0),
 
     # ============ 路径穿越 / 文件包含 ============
     PHPSink("include", VulnType.PATH_TRAVERSAL.value,
@@ -119,9 +118,13 @@ PHP_SINKS: list[PHPSink] = [
     PHPSink("require_once", VulnType.PATH_TRAVERSAL.value,
             "require_once() — 文件包含（单次，致命）", 0),
     PHPSink("file_get_contents", VulnType.PATH_TRAVERSAL.value,
-            "file_get_contents() — 路径穿越可读取任意文件", 0),
+            "file_get_contents() — 路径可控可读取任意文件", 0),
     PHPSink("file_put_contents", VulnType.PATH_TRAVERSAL.value,
             "file_put_contents() — 写入任意文件", 0),
+    PHPSink("fopen", VulnType.PATH_TRAVERSAL.value,
+            "fopen() — 文件路径可控（LFI/路径穿越）", 0),
+    PHPSink("readfile", VulnType.PATH_TRAVERSAL.value,
+            "readfile() — 读取文件并输出（路径可控）", 0),
     PHPSink("unlink", VulnType.PATH_TRAVERSAL.value,
             "unlink() — 删除文件", 0),
     PHPSink("copy", VulnType.PATH_TRAVERSAL.value,

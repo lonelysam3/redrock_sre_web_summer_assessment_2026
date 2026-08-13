@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI 设置 — 代码审计平台</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='fonts/harmonyos/harmonyos.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
@@ -18,11 +19,38 @@
         <span class="float-particle"></span>
         <span class="float-particle"></span>
     </div>
+    <!-- 背景渐变彩带（极光，参考 DeepSeek 官网背景） -->
+    <div class="aurora" aria-hidden="true">
+        <span class="aurora-ribbon r1"></span>
+        <span class="aurora-ribbon r2"></span>
+        <span class="aurora-ribbon r3"></span>
+    </div>
+    <!-- 背景装饰：气泡 + 网格线 + 装饰线条 -->
+    <div class="bg-deco" aria-hidden="true">
+        <div class="bg-grid"></div>
+        <div class="bg-line l1"></div>
+        <div class="bg-line l2"></div>
+        <div class="bg-line lv"></div>
+        <div class="bg-plus p1"></div>
+        <div class="bg-plus p2"></div>
+        <div class="bg-plus p3"></div>
+        <div class="bg-plus p4"></div>
+        <span class="bubble b1"></span>
+        <span class="bubble b2"></span>
+        <span class="bubble b3"></span>
+        <span class="bubble b4"></span>
+        <span class="bubble b5"></span>
+        <span class="bubble b6"></span>
+        <span class="bubble b7"></span>
+        <span class="bubble b8"></span>
+        <span class="bubble b9"></span>
+        <span class="bubble b10"></span>
+    </div>
     <!-- ========== 顶部导航栏 ========== -->
     <header class="header">
         <div class="container">
             <a href="javascript:history.back()" class="btn btn-sm" style="margin-right:12px;">返回</a>
-            <h1>AI 配置</h1>
+            <h1>AI 设置</h1>
             <nav>
                 <span class="header-theme-wrap">
                     <span class="header-theme-label">主题</span>
@@ -85,7 +113,7 @@
                     <div class="input-row">
                         <input type="text" id="model" name="model"
                                value="{{ settings.model }}"
-                               placeholder="deepseek-chat">
+                               placeholder="deepseek-v4-flash">
                         <button type="button" class="btn" id="fetch-models-btn" onclick="fetchModels()">获取模型</button>
                     </div>
                     <div id="model-list" class="model-dropdown" style="display:none;"></div>
@@ -114,13 +142,13 @@
                     <tr>
                         <td>DeepSeek</td>
                         <td><code>https://api.deepseek.com</code></td>
-                        <td><code>deepseek-chat</code></td>
+                        <td><code>deepseek-v4-flash</code></td>
                         <td><a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a></td>
                     </tr>
                     <tr>
                         <td>OpenAI</td>
                         <td><code>https://api.openai.com</code></td>
-                        <td><code>gpt-4o</code></td>
+                        <td><code>gpt-4.1</code></td>
                         <td><a href="https://platform.openai.com" target="_blank">platform.openai.com</a></td>
                     </tr>
                     <tr>
@@ -165,8 +193,8 @@
          * 可根据需要扩展更多平台。
          */
         const PRESETS = {
-            deepseek: { base_url: 'https://api.deepseek.com', model: 'deepseek-chat', provider: 'deepseek' },
-            openai:   { base_url: 'https://api.openai.com', model: 'gpt-4o', provider: 'openai' },
+            deepseek: { base_url: 'https://api.deepseek.com', model: 'deepseek-v4-flash', provider: 'deepseek' },
+            openai:   { base_url: 'https://api.openai.com', model: 'gpt-4.1', provider: 'openai' },
         };
 
         /**
@@ -330,6 +358,19 @@
     </script>
     <script>
     window.addEventListener("pageshow",function(e){if(e.persisted)location.reload()});
+    </script>
+    <!-- 滚动收缩横幅：下滑时 header 收缩为 80% 宽圆角玻璃胶囊 -->
+    <script>
+        (function () {
+            var header = document.querySelector('.header');
+            if (!header) return;
+            var onScroll = function () {
+                if (window.scrollY > 16) header.classList.add('scrolled');
+                else header.classList.remove('scrolled');
+            };
+            window.addEventListener('scroll', onScroll, { passive: true });
+            onScroll();
+        })();
     </script>
 </body>
 </html>

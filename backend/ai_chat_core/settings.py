@@ -70,13 +70,13 @@ def default_settings_from_env() -> runtime_settings:
       - AI_PROVIDER_ID   (默认: "openai")
       - AI_API_KEY       (必需)
       - AI_BASE_URL      (默认: "https://api.openai.com/v1")
-      - AI_MODEL         (默认: "gpt-4o-mini")
+      - AI_MODEL         (默认: "gpt-4.1")
     """
     return runtime_settings(
         provider_id=os.getenv("AI_PROVIDER_ID", "openai"),
         api_key=os.getenv("AI_API_KEY", ""),
         base_url=os.getenv("AI_BASE_URL", "https://api.openai.com/v1"),
-        default_model=os.getenv("AI_MODEL", "gpt-4o-mini"),
+        default_model=os.getenv("AI_MODEL", "gpt-4.1"),
     )
 
 

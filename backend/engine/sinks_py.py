@@ -32,6 +32,34 @@ class VulnType(Enum):
     SSRF = "ssrf"                                # 服务端请求伪造
     PATH_TRAVERSAL = "path_traversal"            # 路径穿越
     ARBITRARY_FILE_READ = "arbitrary_file_read"  # 任意文件读取
+    INSCURE_DESERIALIZATION = "insecure_deserialization"  # 不安全反序列化
+    CODE_INJECTION = "code_injection"            # 代码注入（eval/exec/compile）
+    OPEN_REDIRECT = "open_redirect"              # 开放重定向
+    XXE = "xxe"                                  # XML 外部实体注入
+    XSS = "xss"                                  # 反射型 XSS
+    SSTI = "ssti"                                # 服务端模板注入
+    HARDCODED_CREDENTIALS = "hardcoded_credentials"  # 硬编码凭据
+    DEBUG_MODE = "debug_mode"                    # 调试模式开启
+
+
+# 漏洞类型 → CWE 映射（供结果输出使用；RealVuln 等外部基准依赖 CWE 编号）
+CWE_BY_TYPE: dict[str, str] = {
+    "sql_injection": "CWE-89",
+    "command_execution": "CWE-78",
+    "code_injection": "CWE-94",
+    "ssrf": "CWE-918",
+    "path_traversal": "CWE-22",
+    "arbitrary_file_read": "CWE-22",
+    "insecure_deserialization": "CWE-502",
+    "deserialization": "CWE-502",
+    "open_redirect": "CWE-601",
+    "xxe": "CWE-611",
+    "xss": "CWE-79",
+    "ssti": "CWE-94",
+    "hardcoded_credentials": "CWE-798",
+    "debug_mode": "CWE-215",
+    "file_upload": "CWE-434",
+}
 
 
 @dataclass
@@ -119,4 +147,91 @@ PYTHON_SINKS: list[Sink] = [
          dangerous_param_index=0),
     Sink("aiohttp", "ClientSession.get", VulnType.SSRF, "aiohttp GET", dangerous_param_index=0),
     Sink("aiohttp", "ClientSession.post", VulnType.SSRF, "aiohttp POST", dangerous_param_index=0),
+
+    # ============ 数据库游标/连接对象（经 local_types 类型传播解析） ============
+    # conn = sqlite3.connect() / pymysql.connect() ... → "db.Connection"
+    # cur = conn.cursor() → "db.Cursor"
+    # cur.execute(tainted_sql) → 命中下方 sink
+    Sink("db.Cursor", "execute", VulnType.SQL_INJECTION, "数据库游标执行",
+         dangerous_param_index=0),
+    Sink("db.Cursor", "executemany", VulnType.SQL_INJECTION, "数据库游标批量执行",
+         dangerous_param_index=0),
+    Sink("db.Cursor", "executescript", VulnType.SQL_INJECTION, "数据库游标脚本执行",
+         dangerous_param_index=0),
+    Sink("db.Connection", "execute", VulnType.SQL_INJECTION, "数据库连接直接执行",
+         dangerous_param_index=0),
+    Sink("db.Connection", "executemany", VulnType.SQL_INJECTION, "数据库连接批量执行",
+         dangerous_param_index=0),
+    Sink("django.db.models.query", "raw", VulnType.SQL_INJECTION, "Django ORM raw()",
+         dangerous_param_index=0),
+
+    # ============ 路径穿越 / 任意文件读取 ============
+    Sink("builtins", "open", VulnType.PATH_TRAVERSAL, "open() 用户可控路径",
+         dangerous_param_index=0),
+    Sink("pathlib", "Path", VulnType.PATH_TRAVERSAL, "pathlib.Path() 用户可控路径",
+         dangerous_param_index=0),
+    Sink("pathlib", "read_text", VulnType.PATH_TRAVERSAL, "Path.read_text()",
+         dangerous_param_index=0),
+    Sink("flask", "send_file", VulnType.PATH_TRAVERSAL, "Flask send_file()",
+         dangerous_param_index=0),
+    Sink("flask", "send_from_directory", VulnType.PATH_TRAVERSAL, "Flask send_from_directory()",
+         dangerous_param_index=0),
+    Sink("fastapi.responses", "FileResponse", VulnType.PATH_TRAVERSAL, "FastAPI FileResponse",
+         dangerous_param_index=0),
+    Sink("starlette.responses", "FileResponse", VulnType.PATH_TRAVERSAL, "Starlette FileResponse",
+         dangerous_param_index=0),
+    Sink("aiohttp.web", "FileResponse", VulnType.PATH_TRAVERSAL, "aiohttp FileResponse",
+         dangerous_param_index=0),
+
+    # ============ 不安全反序列化 ============
+    Sink("pickle", "loads", VulnType.INSCURE_DESERIALIZATION, "pickle.loads()",
+         dangerous_param_index=0),
+    Sink("pickle", "load", VulnType.INSCURE_DESERIALIZATION, "pickle.load()",
+         dangerous_param_index=0),
+    Sink("yaml", "load", VulnType.INSCURE_DESERIALIZATION, "yaml.load() 无 SafeLoader",
+         dangerous_param_index=0),
+    Sink("yaml", "unsafe_load", VulnType.INSCURE_DESERIALIZATION, "yaml.unsafe_load()",
+         dangerous_param_index=0),
+    Sink("marshal", "loads", VulnType.INSCURE_DESERIALIZATION, "marshal.loads()",
+         dangerous_param_index=0),
+
+    # ============ XXE ============
+    Sink("lxml.etree", "parse", VulnType.XXE, "lxml.etree.parse()",
+         dangerous_param_index=0),
+    Sink("lxml.etree", "fromstring", VulnType.XXE, "lxml.etree.fromstring()",
+         dangerous_param_index=0),
+    Sink("xml.etree.ElementTree", "parse", VulnType.XXE, "ElementTree.parse()",
+         dangerous_param_index=0),
+    Sink("xml.etree.ElementTree", "fromstring", VulnType.XXE, "ElementTree.fromstring()",
+         dangerous_param_index=0),
+    Sink("xml.dom.minidom", "parse", VulnType.XXE, "minidom.parse()",
+         dangerous_param_index=0),
+    Sink("xml.dom.minidom", "parseString", VulnType.XXE, "minidom.parseString()",
+         dangerous_param_index=0),
+
+    # ============ 开放重定向 ============
+    Sink("flask", "redirect", VulnType.OPEN_REDIRECT, "Flask redirect()",
+         dangerous_param_index=0),
+    Sink("django.shortcuts", "redirect", VulnType.OPEN_REDIRECT, "Django redirect()",
+         dangerous_param_index=0),
+    Sink("django.http", "HttpResponseRedirect", VulnType.OPEN_REDIRECT, "Django HttpResponseRedirect",
+         dangerous_param_index=0),
+    Sink("django.http", "HttpResponsePermanentRedirect", VulnType.OPEN_REDIRECT, "Django HttpResponsePermanentRedirect",
+         dangerous_param_index=0),
+    Sink("fastapi.responses", "RedirectResponse", VulnType.OPEN_REDIRECT, "FastAPI RedirectResponse",
+         dangerous_param_index=0),
+    Sink("starlette.responses", "RedirectResponse", VulnType.OPEN_REDIRECT, "Starlette RedirectResponse",
+         dangerous_param_index=0),
+
+    # ============ SSTI / XSS ============
+    Sink("flask", "render_template_string", VulnType.SSTI, "Flask render_template_string()",
+         dangerous_param_index=0),
+    Sink("jinja2", "Template", VulnType.SSTI, "jinja2.Template() 用户可控模板",
+         dangerous_param_index=0),
+    Sink("jinja2.Environment", "from_string", VulnType.SSTI, "Jinja2 from_string()",
+         dangerous_param_index=0),
+    Sink("markupsafe", "Markup", VulnType.XSS, "Markup() 绕过转义",
+         dangerous_param_index=0),
+    Sink("django.http", "HttpResponse", VulnType.XSS, "Django HttpResponse 直接输出",
+         dangerous_param_index=0),
 ]

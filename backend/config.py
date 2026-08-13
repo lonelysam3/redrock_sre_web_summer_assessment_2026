@@ -40,7 +40,7 @@ class Config:
     # 可通过环境变量覆盖，也可在 Web 设置页面动态修改（存入数据库）
     DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
     DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-    DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     # ---- 上传 / 扫描限制 ----
     MAX_UPLOAD_SIZE_MB = 100  # 单次上传的压缩包最大 100MB

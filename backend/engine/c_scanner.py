@@ -44,6 +44,15 @@ from engine.taint_tracker import TaintTracker
 from engine.sources_c import C_SOURCES
 from engine.sinks_c import C_SINKS, VulnType
 
+# ---- C 消毒函数集合 ----
+# 数值转换函数把任意输入转为数字，消除注入类漏洞（SQL/命令/路径）。
+# 值 None = 全类型消毒。
+C_SANITIZER_NAMES: dict[str, None] = {
+    "atoi": None, "atol": None, "atoll": None, "atof": None,
+    "strtol": None, "strtoul": None, "strtoll": None, "strtoull": None,
+    "strtod": None, "strtof": None, "strtold": None,
+}
+
 # ---- tree-sitter 导入（带优雅降级） ----
 try:
     import tree_sitter_c     # C 语言语法
@@ -58,7 +67,7 @@ except ImportError:
 # ---- 漏洞严重程度映射 ----
 SEVERITY_MAP = {
     VulnType.COMMAND_EXECUTION: "critical",    # 命令执行：最高风险
-    VulnType.PATH_TRAVERSAL: "high",           # 路径穿越：可访问任意文件
+    VulnType.PATH_TRAVERSAL: "medium",         # 路径穿越（与其它语言保持一致）
     VulnType.ARBITRARY_FILE_READ: "medium",    # 任意文件读取：中等风险
 }
 
@@ -231,14 +240,21 @@ class CScanner:
                 # 匹配到已知 Source 函数
                 info = self.source_info[fname]
                 tainted_params = info.get("tainted_params")
-
-                # 提取被污染参数中的变量名
-                arg_vars = self._call_arg_vars(node, tainted_params, source_bytes)
                 code = self._text(node, source_bytes)
+                line = node.start_point[0] + 1
 
-                for var in arg_vars:
-                    tracker.mark_source(var, source_func=fname, code=code,
-                                        line=node.start_point[0] + 1)  # tree-sitter 行号从 0 开始
+                if tainted_params is None:
+                    # 返回值被污染（如 getenv）：标记赋值目标变量为 source
+                    # char *cmd = getenv("CMD"); → cmd 是 source
+                    assigned = self._get_assigned_var(node, source_bytes)
+                    tracker.mark_source(assigned, source_func=fname,
+                                        code=code, line=line)
+                else:
+                    # 参数被污染（如 fgets(buf)）：标记参数变量
+                    arg_vars = self._call_arg_vars(node, tainted_params, source_bytes)
+                    for var in arg_vars:
+                        tracker.mark_source(var, source_func=fname, code=code,
+                                            line=line)
 
         # ---- 类型 2：函数定义的 argv 参数 ----
         if node.type == "function_definition":
@@ -313,6 +329,7 @@ class CScanner:
                         tracker.mark_assign(name, v, reason="decl",
                                             code=self._text(node, source_bytes),
                                             line=node.start_point[0] + 1)
+                    self._check_sanitizer(value, [name], tracker, source_bytes)
 
         # ---- 形式 2：初始化声明器 (init_declarator) ----
         # 如: char *cmd = argv[1];（多个声明器中的某一个）
@@ -324,6 +341,7 @@ class CScanner:
                     tracker.mark_assign(name, v, reason="init",
                                         code=self._text(node, source_bytes),
                                         line=node.start_point[0] + 1)
+                self._check_sanitizer(value, [name], tracker, source_bytes)
 
         # ---- 形式 3：赋值表达式 (assignment_expression) ----
         # 如: x = y; 或 x += y;
@@ -331,11 +349,26 @@ class CScanner:
             left = node.child_by_field_name("left")    # 被赋值的变量
             right = node.child_by_field_name("right")  # 赋值来源
             if left and right:
-                for lv in self._expr_vars(left, source_bytes):
+                left_vars = self._expr_vars(left, source_bytes)
+                for lv in left_vars:
                     for rv in self._expr_vars(right, source_bytes):
                         tracker.mark_assign(lv, rv, reason="assign",
                                             code=self._text(node, source_bytes),
                                             line=node.start_point[0] + 1)
+                self._check_sanitizer(right, left_vars, tracker, source_bytes)
+
+    def _check_sanitizer(self, value_node, targets: list[str],
+                         tracker: TaintTracker, source_bytes: bytes):
+        """
+        检查赋值右侧是否为数值转换消毒函数（atoi/strtol 等）。
+        数值转换把输入变成纯数字，消除注入类漏洞，做全类型消毒。
+        """
+        if value_node.type != "call_expression":
+            return
+        fname = self._func_name(value_node, source_bytes)
+        if fname and fname in C_SANITIZER_NAMES:
+            for t in targets:
+                tracker.sanitize(t, fname, vuln_types=None)
 
     # ========================================================================
     # tree-sitter 辅助函数
@@ -355,6 +388,41 @@ class CScanner:
             str: 该节点对应的源码字符串
         """
         return source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+    def _get_assigned_var(self, call_node, source_bytes: bytes) -> str:
+        """
+        向上查找调用节点的赋值目标变量名（用于返回值被污染的函数）。
+
+        例：
+            char *cmd = getenv("CMD");   → "cmd"
+            int n = atoi(argv[1]);       → "n"
+
+        找到 declaration/init_declarator/assignment_expression 时返回
+        左侧变量名；找不到则返回匿名名。
+        """
+        current = call_node
+        for _ in range(5):
+            parent = current.parent
+            if parent is None:
+                break
+            if parent.type == "init_declarator":
+                name = self._decl_name(parent, source_bytes)
+                if name:
+                    return name
+            elif parent.type == "declaration":
+                decl = parent.child_by_field_name("declarator")
+                if decl is not None:
+                    name = self._decl_name(decl, source_bytes)
+                    if name:
+                        return name
+            elif parent.type == "assignment_expression":
+                left = parent.child_by_field_name("left")
+                if left is not None:
+                    vars_in_left = self._expr_vars(left, source_bytes)
+                    if vars_in_left:
+                        return vars_in_left[0]
+            current = parent
+        return f"__c_ret_{call_node.start_point[0] + 1}"
 
     def _func_name(self, call_node, source_bytes: bytes) -> str | None:
         """

@@ -627,10 +627,28 @@ def parse_tool_calls(response: str) -> list[dict]:
     if calls:
         return calls
 
-    # 策略 3：单个裸 JSON 对象含 name + arguments
-    for m in re.finditer(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*(\{[^}]+\})\s*\}', response):
+    # 策略 3：单个裸 JSON 对象含 name + arguments（支持空参数 {}）
+    for m in re.finditer(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:', response):
+        # 括号计数提取 arguments 对象（支持嵌套与空对象）
+        start = m.end()
+        while start < len(response) and response[start] != '{':
+            start += 1
+        if start >= len(response):
+            continue
+        depth = 0
+        end = start
+        for i in range(start, len(response)):
+            if response[i] == '{':
+                depth += 1
+            elif response[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
         try:
-            calls.append(dict(name=m.group(1), arguments=json.loads(m.group(2))))
+            args = json.loads(response[start:end])
+            if isinstance(args, dict):
+                calls.append(dict(name=m.group(1), arguments=args))
         except (json.JSONDecodeError, TypeError):
             pass
     if calls:

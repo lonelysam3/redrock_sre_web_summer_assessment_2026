@@ -29,10 +29,10 @@ class ai_chat_core:
 
     用法:
         core = ai_chat_core(router)
-        reply = core.chat(model="deepseek-chat", user_message="Hello")
-        for chunk in core.chat_stream(model="deepseek-chat", user_message="Hi"):
+        reply = core.chat(model="deepseek-v4-flash", user_message="Hello")
+        for chunk in core.chat_stream(model="deepseek-v4-flash", user_message="Hi"):
             print(chunk, end="")
-        result = core.detect_vulnerabilities(code="...", language="python", model="deepseek-chat")
+        result = core.detect_vulnerabilities(code="...", language="python", model="deepseek-v4-flash")
     """
 
     def __init__(self, router: model_router):
@@ -52,7 +52,7 @@ class ai_chat_core:
         非流式对话：发送消息，等待完整回复。
 
         参数:
-            model:          模型名称（如 "deepseek-chat"）
+            model:          模型名称（如 "deepseek-v4-flash"）
             user_message:   用户消息
             provider_id:    显式指定 provider（可选，默认按模型路由）
             system_prompt:  系统提示词（可选）

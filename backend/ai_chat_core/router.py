@@ -12,7 +12,7 @@
             model_route("o", "openai"),             # o1, o3... → OpenAI
         ],
     )
-    provider = router.resolve_provider("gpt-4o")   # → openai 的 provider
+    provider = router.resolve_provider("gpt-4.1")   # → openai 的 provider
 """
 from __future__ import annotations
 

@@ -757,10 +757,14 @@ def _run_ai_analysis(app: Flask, scan_id: int):
 
             if results:
                 import json as json_mod
+                from ai.client import is_tool_call_result
                 for i, result in enumerate(results):
                     idx = start + i  # 全局索引
                     if idx < len(vulns):
                         v = vulns[idx]
+                        # 工具调用结果不写入分析字段
+                        if is_tool_call_result(result):
+                            continue
                         # ---- 将 AI 深度分析结果写入数据库 ----
                         v.ai_analysis = json_mod.dumps(result, ensure_ascii=False)
                         v.ai_is_vulnerable = (result.get("is_vulnerable", "uncertain") or "uncertain").lower()
@@ -803,6 +807,7 @@ def _run_ai_analysis(app: Flask, scan_id: int):
 def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
     """对扫描发现的所有漏洞逐个进行 AI 深度分析。log 可以是 stderr 或任何有 write/flush 的对象。"""
     import json as _json
+    from ai.client import is_tool_call_result
     from utils.code_extractor import extract_source_context
     from models import db, ScanTask
 
@@ -905,7 +910,7 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
                 r = result
                 if isinstance(r, list):
                     r = r[0] if r and isinstance(r[0], dict) else None
-                if isinstance(r, dict):
+                if isinstance(r, dict) and not is_tool_call_result(r):
                     v.ai_analysis = _json.dumps(r, ensure_ascii=False)
                     v.ai_is_vulnerable = r.get("is_vulnerable", "uncertain")
                     v.ai_severity = r.get("severity", v.severity)

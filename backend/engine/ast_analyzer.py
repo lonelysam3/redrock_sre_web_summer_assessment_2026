@@ -46,6 +46,8 @@ class ASTPattern(Enum):
     DANGEROUS_COMBO = "dangerous_combo"                # 危险函数组合
     EXTRACT_OVERRIDE = "extract_override"               # extract() 变量覆盖
     MAGIC_METHOD_CHAIN = "magic_method_chain"           # 魔术方法链
+    HARDCODED_CREDENTIALS = "hardcoded_credentials"     # 硬编码凭据
+    DEBUG_MODE = "debug_mode"                           # 调试模式开启
 
 
 @dataclass
@@ -103,16 +105,16 @@ class ASTAnalyzer:
         r'\bexecute\s*\(\s*\[.*\]\s*\)',  # PDO execute with array
         r'\bbind_param\s*\(',              # mysqli bind_param
         r'\bbindValue\s*\(',               # PDO bindValue
-        r'\?',                             # ? placeholder（需结合上下文）
-        r':[a-zA-Z_]\w*\b',                # :named placeholder
     ]
 
     # 白名单验证模式（安全）
+    # 注意：只有赋值右侧为数组字面量（[...] 或 array(...)）才视为真白名单；
+    # `$allowed = $_GET['x']` 不是白名单，不能据此降级漏洞。
     ALLOWLIST_PATTERNS = [
         r'in_array\s*\(\s*\$[a-zA-Z_]\w*\s*,\s*\[',  # in_array($x, [...])
-        r'\$allowed\w*\s*=',                           # $allowed = [...]  
-        r'\$whitelist\w*\s*=',                         # $whitelist = [...]
-        r'switch\s*\(\s*\$[a-zA-Z_]\w*\s*\)',         # switch($input)
+        r'\$allowed\w*\s*=\s*\[',                     # $allowed = [...
+        r'\$allowed\w*\s*=\s*array\s*\(',            # $allowed = array(...
+        r'\$whitelist\w*\s*=\s*(?:\[|array\s*\()',  # $whitelist = [...]
     ]
 
     # 黑名单/过滤模式（不可靠）
@@ -123,11 +125,47 @@ class ASTAnalyzer:
     ]
 
     # 危险函数组合
+    # 只在同一函数/相邻窗口内同时出现才报告；删除过于宽泛的组合
+    # （如 file_get_contents + include，模板加载极常见，误报率高）。
     DANGEROUS_COMBOS = [
         (r'unserialize\s*\(', r'__destruct|__wakeup|__toString'),
-        (r'file_get_contents\s*\(', r'eval\s*\(|include\s*\('),
+        (r'file_get_contents\s*\(', r'eval\s*\('),
         (r'extract\s*\(\s*\$_(?:GET|POST|REQUEST)', r'include\s*\(\s*\$'),
         (r'move_uploaded_file\s*\(', r'\.php[\'"]'),
+    ]
+
+    # Python：eval/exec/compile 邻近出现 → 代码注入利用链（CWE-94）
+    PY_CODE_INJECTION_COMBOS = [
+        (r'\beval\s*\(', r'\bexec\s*\(|\bcompile\s*\('),
+        (r'\bexec\s*\(', r'\bcompile\s*\('),
+    ]
+
+    # 硬编码凭据（Python/通用）：变量名含凭据关键词 + 字符串字面量赋值
+    CRED_NAME_PATTERN = re.compile(
+        r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:u|r|f|b)?([\'\"])(.*?)\2\s*(?:#.*)?$',
+        re.MULTILINE
+    )
+    CRED_KEYWORDS = (
+        "password", "passwd", "secret", "api_key", "api_token",
+        "auth_token", "access_token", "private_key", "db_pass",
+        "database_url", "jwt_secret", "hmac_secret", "signing_key",
+        "webhook_secret", "client_secret",
+    )
+    # 明显是占位符/示例的值，不算硬编码凭据
+    CREDENTIAL_PLACEHOLDERS = (
+        "changeme", "change-me", "placeholder", "your-", "your_",
+        "example", "xxxx", "redacted", "***", "...", "todo",
+        "<secret>", "<password>", "<your", "password>", "secret>",
+        "put-", "replace", "fill-", "dev-insecure", "do-not-use",
+    )
+    # 名字以这些后缀结尾的常量是字段名/头名，不是凭据
+    CRED_EXCLUDED_SUFFIXES = ("_header", "_name", "_field", "_key_name", "_param")
+
+    # 调试模式开启（Python）
+    DEBUG_MODE_PATTERNS = [
+        re.compile(r'^\s*DEBUG\s*=\s*True\b', re.MULTILINE),           # Django settings
+        re.compile(r'\bDEBUG\s*=\s*True\b'),                            # 任意 DEBUG = True
+        re.compile(r'app\.run\s*\([^)]*debug\s*=\s*True', re.IGNORECASE),  # Flask app.run(debug=True)
     ]
 
     def analyze(self, source_code_map: dict[str, str]) -> list[ASTFinding]:
@@ -215,6 +253,15 @@ class ASTAnalyzer:
         # 8. 检测 PDO 不安全用法（emulated prepares + GBK / query 拼接）
         findings.extend(self._find_pdo_vulnerabilities(file_path, source_code, lines))
 
+        # 9. 检测硬编码凭据
+        findings.extend(self._find_hardcoded_credentials(file_path, source_code, lines))
+
+        # 10. 检测调试模式开启
+        findings.extend(self._find_debug_modes(file_path, source_code, lines))
+
+        # 11. Python 代码注入组合（eval/exec/compile 邻近）
+        findings.extend(self._find_py_code_injection_combos(file_path, source_code, lines))
+
         return findings
 
     def _find_parameterized_queries(self, file_path: str, source_code: str,
@@ -225,8 +272,9 @@ class ASTAnalyzer:
             for pattern in self.PARAMETERIZED_SQL_PATTERNS:
                 if re.search(pattern, line, re.IGNORECASE):
                     # 检查前面是否有 SQL 关键字，避免误匹配
+                    # 注意：用词边界（\b）防止 "from" 匹配到注释/英文单词中的子串
                     context = "\n".join(lines[max(0, i-3):min(len(lines), i+2)])
-                    if re.search(r'(?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)', context, re.IGNORECASE):
+                    if re.search(r'\b(?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|LIMIT|GROUP\s+BY|ORDER\s+BY)\b', context, re.IGNORECASE):
                         findings.append(ASTFinding(
                             file_path=file_path,
                             line_number=i,
@@ -283,47 +331,52 @@ class ASTAnalyzer:
 
     def _find_dangerous_combos(self, file_path: str, source_code: str,
                                lines: list[str]) -> list[ASTFinding]:
-        """检测危险函数组合（同文件 + 跨文件）"""
+        """
+        检测危险函数组合。
+
+        与旧版不同，只在同一窗口（±8 行）内同时出现两个模式才报告，
+        避免"整个文件里某处有 unserialize、另一处有 __destruct"这类
+        高误报的宽松匹配。
+        """
         findings = []
-        text = source_code
-        all_text = "\n".join(getattr(self, '_source_map', {}).values())
+        window = 8
+        reported = set()  # (combo_index, line) 去重
 
-        for combo_a, combo_b in self.DANGEROUS_COMBOS:
-            # 同文件检测
-            if re.search(combo_a, text, re.IGNORECASE) and re.search(combo_b, text, re.IGNORECASE):
-                for i, line in enumerate(lines, 1):
-                    if re.search(combo_a, line, re.IGNORECASE) or re.search(combo_b, line, re.IGNORECASE):
-                        findings.append(ASTFinding(
-                            file_path=file_path, line_number=i,
-                            pattern=ASTPattern.DANGEROUS_COMBO, confidence=0.7,
-                            description="同文件危险函数组合，可能形成漏洞利用链",
-                            related_vuln_types=["command_execution", "deserialization"],
-                            evidence=line.strip(), is_safe=False,
-                        ))
-                        break
+        for combo_idx, (combo_a, combo_b) in enumerate(self.DANGEROUS_COMBOS):
+            a_lines = set()
+            b_lines = set()
+            for i, line in enumerate(lines, 1):
+                if re.search(combo_a, line, re.IGNORECASE):
+                    a_lines.add(i)
+                if re.search(combo_b, line, re.IGNORECASE):
+                    b_lines.add(i)
 
-            # 跨文件检测：项目某处有 combo_a，本文件有 combo_b
-            elif re.search(combo_a, all_text, re.IGNORECASE) and re.search(combo_b, text, re.IGNORECASE):
-                for i, line in enumerate(lines, 1):
-                    if re.search(combo_b, line, re.IGNORECASE):
-                        # 找到 combo_a 在哪个文件
-                        a_file = ""
-                        for fp, src in getattr(self, '_source_map', {}).items():
-                            if re.search(combo_a, src, re.IGNORECASE):
-                                a_file = fp
-                                break
-                        findings.append(ASTFinding(
-                            file_path=file_path, line_number=i,
-                            pattern=ASTPattern.DANGEROUS_COMBO, confidence=0.6,
-                            description=(
-                                f"跨文件危险函数组合（行 {i}）："
-                                + (f"{a_file} " if a_file else "")
-                                + "存在关联的危险调用，可能形成漏洞利用链"
-                            ),
-                            related_vuln_types=["command_execution", "deserialization"],
-                            evidence=line.strip(), is_safe=False,
-                        ))
-                        break
+            # 两种模式都必须出现，且在同一窗口内相邻
+            if not a_lines or not b_lines:
+                continue
+            a_sorted = sorted(a_lines)
+            b_sorted = sorted(b_lines)
+            for ln in a_sorted:
+                near = any(abs(other - ln) <= window for other in b_sorted)
+                if not near:
+                    continue
+                key = (combo_idx, ln)
+                if key in reported:
+                    continue
+                reported.add(key)
+                # 确定该行匹配的是哪个模式，给出准确证据
+                line = lines[ln - 1] if ln - 1 < len(lines) else ""
+                findings.append(ASTFinding(
+                    file_path=file_path, line_number=ln,
+                    pattern=ASTPattern.DANGEROUS_COMBO, confidence=0.7,
+                    description=(
+                        f"危险函数组合（行 {ln} 附近 ±{window} 行）："
+                        "多个危险调用邻近出现，可能形成漏洞利用链"
+                    ),
+                    related_vuln_types=["command_execution", "deserialization"],
+                    evidence=line.strip(), is_safe=False,
+                ))
+                break  # 每个组合只报告一次
 
         return findings
 
@@ -670,4 +723,142 @@ class ASTAnalyzer:
                             is_safe=False,
                         ))
 
+        return findings
+
+    # ----------------------------------------------------------------
+    # 新增检测：硬编码凭据 / 调试模式 / Python 代码注入组合
+    # ----------------------------------------------------------------
+
+    def _find_hardcoded_credentials(self, file_path: str, source_code: str,
+                                    lines: list[str]) -> list[ASTFinding]:
+        """
+        检测硬编码凭据（CWE-798）。
+
+        PASSWORD = 'admin123' / SECRET_KEY = 'abc...' / API_TOKEN = 'x...'
+        值必须是字符串字面量，且不是明显的占位符/示例值。
+        测试文件（tests/ 目录、test_*.py）中的密码属于测试数据，跳过。
+        """
+        norm_path = (file_path or "").replace("\\", "/").lower()
+        if "/tests/" in norm_path or "/test/" in norm_path:
+            return []
+        fname = norm_path.split("/")[-1]
+        if fname.startswith("test_") or fname.endswith("_test.py") or fname == "tests.py":
+            return []
+        # 种子/演示数据脚本中的凭据是示例数据，跳过
+        if ("seed" in fname or fname.startswith("smoke_check")
+                or fname.startswith("create_dummy")):
+            return []
+
+        findings = []
+        for match in self.CRED_NAME_PATTERN.finditer(source_code):
+            name = match.group(1)
+            value = match.group(3).strip()
+            if len(value) < 3:
+                continue
+            # 值内含引号 → 元组/多字符串拼接，不是单一凭据字面量
+            if "'" in value or '"' in value:
+                continue
+            name_low = name.lower()
+            # 演示数据常量（DEMO_PASSWORD 等）跳过
+            if name_low.startswith("demo_") or name_low.startswith("sample_"):
+                continue
+            if any(name_low.endswith(s) for s in self.CRED_EXCLUDED_SUFFIXES):
+                continue
+            has_keyword = any(kw in name_low for kw in self.CRED_KEYWORDS)
+            # KEY / xxx_KEY 这类泛名：值必须足够长（>= 12）才视为凭据，避免误报
+            long_key_name = (
+                name_low == "key" or name_low.endswith("key")
+            ) and len(value) >= 12
+            if not has_keyword and not long_key_name:
+                continue
+            low = value.lower()
+            if any(p in low for p in self.CREDENTIAL_PLACEHOLDERS):
+                continue
+            if "$" in value or "{" in value or "(" in value or "%" in value:
+                continue  # 插值/函数调用，不是字面量
+            if low == name_low or low in ("password", "passwd", "secret", "apikey", "api_key"):
+                continue  # 值等于变量名本身，通常是文档示例
+            line_num = source_code[:match.start()].count("\n") + 1
+            findings.append(ASTFinding(
+                file_path=file_path,
+                line_number=line_num,
+                pattern=ASTPattern.HARDCODED_CREDENTIALS,
+                confidence=0.9,
+                description=(
+                    f"硬编码凭据（行 {line_num}）：{name} "
+                    f"以明文字符串形式硬编码在源码中，应改用环境变量/密钥管理服务"
+                ),
+                related_vuln_types=["hardcoded_credentials"],
+                evidence=(match.group(0)[:120] + "...").strip(),
+                is_safe=False,
+            ))
+        return findings
+
+    def _find_debug_modes(self, file_path: str, source_code: str,
+                          lines: list[str]) -> list[ASTFinding]:
+        """
+        检测调试模式开启（CWE-215）。
+
+        DEBUG = True（Django settings）/ app.run(debug=True)（Flask）。
+        跳过测试文件（test*.py / *_test.py），测试代码开启 debug 属正常。
+        """
+        fname = (file_path or "").lower().replace("\\", "/").split("/")[-1]
+        if fname.startswith("test") or fname.endswith("_test.py"):
+            return []
+
+        findings = []
+        for pattern in self.DEBUG_MODE_PATTERNS:
+            for match in pattern.finditer(source_code):
+                line_num = source_code[:match.start()].count("\n") + 1
+                findings.append(ASTFinding(
+                    file_path=file_path,
+                    line_number=line_num,
+                    pattern=ASTPattern.DEBUG_MODE,
+                    confidence=0.85,
+                    description=(
+                        f"调试模式开启（行 {line_num}）：生产环境启用 debug 会泄露堆栈/"
+                        f"配置等敏感信息，并可能暴露调试端点"
+                    ),
+                    related_vuln_types=["debug_mode"],
+                    evidence=match.group(0).strip()[:100],
+                    is_safe=False,
+                ))
+        return findings
+
+    def _find_py_code_injection_combos(self, file_path: str, source_code: str,
+                                       lines: list[str]) -> list[ASTFinding]:
+        """
+        检测 Python eval/exec/compile 邻近组合（CWE-94 代码注入）。
+
+        eval + exec 在同一 ±8 行窗口内出现，通常是动态代码执行利用链。
+        """
+        findings = []
+        window = 8
+        for combo_a, combo_b in self.PY_CODE_INJECTION_COMBOS:
+            a_lines = set()
+            b_lines = set()
+            for i, line in enumerate(lines, 1):
+                if re.search(combo_a, line):
+                    a_lines.add(i)
+                if re.search(combo_b, line):
+                    b_lines.add(i)
+            # 两种模式都必须出现，且在同一窗口内相邻
+            if not a_lines or not b_lines:
+                continue
+            for ln in sorted(a_lines):
+                if any(abs(other - ln) <= window for other in b_lines):
+                    findings.append(ASTFinding(
+                        file_path=file_path,
+                        line_number=ln,
+                        pattern=ASTPattern.DANGEROUS_COMBO,
+                        confidence=0.8,
+                        description=(
+                            f"Python 代码注入组合（行 {ln} 附近 ±{window} 行）："
+                            "eval/exec/compile 邻近出现，可能形成动态代码执行利用链"
+                        ),
+                        related_vuln_types=["code_injection"],
+                        evidence=lines[ln - 1].strip()[:120] if ln - 1 < len(lines) else "",
+                        is_safe=False,
+                    ))
+                    break  # 每组合每文件报告一次
         return findings

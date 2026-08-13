@@ -46,13 +46,29 @@ PYTHON_SOURCES: list[Source] = [
     Source("flask.request.form", "__getitem__", "Flask POST 表单 dict 取值", tainted_params=[]),
     Source("flask.request.json", "get", "Flask JSON body", tainted_params=[]),        # request.json.get('name')
     Source("flask.request.json", "__getitem__", "Flask JSON body dict 取值", tainted_params=[]),
+    Source("flask.request.values", "get", "Flask 组合参数", tainted_params=[]),        # request.values.get('name')
+    Source("flask.request.values", "__getitem__", "Flask 组合参数 dict 取值", tainted_params=[]),
+    Source("flask.request.cookies", "get", "Flask Cookie", tainted_params=[]),
+    Source("flask.request.cookies", "__getitem__", "Flask Cookie dict 取值", tainted_params=[]),
+    Source("flask.request.headers", "get", "Flask 请求头", tainted_params=[]),
+    Source("flask.request.headers", "__getitem__", "Flask 请求头 dict 取值", tainted_params=[]),
     Source("flask.request", "data", "Flask 原始请求体"),                               # request.data
+    Source("flask.request", "get_json", "Flask JSON body", tainted_params=[]),           # request.get_json()
+    Source("flask.request", "get_data", "Flask 原始请求体", tainted_params=[]),          # request.get_data()
     Source("flask.request", "headers", "Flask 请求头"),                                # request.headers
     Source("flask.request", "cookies", "Flask Cookies"),                               # request.cookies
 
     # ============ Django 框架 ============
     Source("django.http.request", "GET", "Django GET 参数"),
     Source("django.http.request", "POST", "Django POST 参数"),
+    Source("django.http.request.GET", "get", "Django GET 参数取值"),
+    Source("django.http.request.GET", "__getitem__", "Django GET 参数 dict 取值"),
+    Source("django.http.request.POST", "get", "Django POST 参数取值"),
+    Source("django.http.request.POST", "__getitem__", "Django POST 参数 dict 取值"),
+    Source("django.http.request.COOKIES", "get", "Django Cookie 取值"),
+    Source("django.http.request.COOKIES", "__getitem__", "Django Cookie dict 取值"),
+    Source("django.http.request.headers", "get", "Django 请求头取值"),
+    Source("django.http.request.headers", "__getitem__", "Django 请求头 dict 取值"),
 
     # ============ Python 通用 ============
     Source("builtins", "input", "input() 标准输入"),                                    # 命令行交互输入
@@ -60,6 +76,8 @@ PYTHON_SOURCES: list[Source] = [
     Source("os", "environ", "os.environ 环境变量"),                                     # 环境变量字典
     Source("os", "getenv", "os.getenv() 环境变量"),                                     # 单个环境变量获取
     Source("builtins", "__import__", "动态导入"),                                        # import('module_name')
+    Source("urllib.parse", "parse_qs", "URL 查询参数解析", tainted_params=[]),            # parse_qs(query_string)
+    Source("urllib.parse", "parse_qsl", "URL 查询参数解析（列表）", tainted_params=[]),   # parse_qsl(query_string)
 
     # ============ 文件读取（仅当文件名也来自用户输入时才是真正的 Source）============
     # 以下已被注释：open() / Path.read_text() 在静态分析中无法区分
