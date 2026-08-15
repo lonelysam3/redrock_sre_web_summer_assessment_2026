@@ -43,15 +43,14 @@ VERIFY_SYSTEM_PROMPT = """你是一名资深渗透测试专家。
 
 ## 工作流程
 
-1. 先调用 search_dangerous_calls 定位所有危险函数
-2. 调用 search_user_inputs 定位所有用户输入入口
-3. 读取关键代码上下文（read_file_region）
-4. **动态验证（必做，优先于静态推断）**：调用 run_target_app 启动应用，
-   用 send_http_request 发送攻击 Payload。先发正常请求做基线，再发
-   Payload 请求对比响应（状态码/报错/内容差异）。攻击完成或无法继续
-   时调用 stop_target_app。
-5. 如时间允许再补充 search_project 等静态佐证
-6. 综合分析后输出最终 JSON 判定结果
+1. **第一步就动态攻击（若沙箱已就绪）**：沙箱上下文里给出了已启动的
+   目标地址时，第一轮就直接用 send_http_request 发基线请求 + 攻击
+   Payload（先正常参数做基线，再发 ' 等错误触发 / ' OR '1'='1 等恒真
+   Payload），对比状态码、报错与内容差异。攻击完可 stop_target_app。
+   沙箱未启动时先 run_target_app。
+2. 再补充静态证据：read_file_region 读关键代码、search_user_inputs /
+   search_dangerous_calls 定位入口与危险函数
+3. 综合分析后输出最终 JSON 判定结果
 
 ## 动态攻击技巧
 
@@ -698,10 +697,11 @@ class AIClient:
             print(f"[{tag}] 轮次耗尽，追加强制输出轮")
             force_prompt = (
                 conversation_history
-                + "\n\n---\n## 最后一轮\n"
+                + "\n\n---\n## 最后一轮（强制）\n"
                 + last_response
-                + "\n\n请立即输出最终 JSON 结果。不要再调用任何工具，"
-                  "不要使用 ```json 包裹，直接输出纯 JSON。"
+                + "\n\n现在必须输出最终 JSON 判定结果。绝对禁止："
+                  "工具调用、<invoke>/<tool_calls> 等 XML 标记、"
+                  "```json 包裹、任何解释文字。只输出一个合法 JSON 对象。"
             )
             forced = self._chat_raw_retry(force_prompt,
                                     system_prompt=system_prompt,

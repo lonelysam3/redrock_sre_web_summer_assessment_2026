@@ -23,6 +23,7 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from pathlib import Path
 
 STARTUP_TIMEOUT = 40        # 应用启动最长等待（秒）
@@ -197,7 +198,6 @@ class SandboxApp:
             return {"success": False, "error": "应用未运行，请先 run_target_app"}
         url = f"http://127.0.0.1:{self.port}{path if path.startswith('/') else '/' + path}"
         if params:
-            import urllib.parse
             url += "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, method=method.upper(),
                                      data=(data or "").encode("utf-8") if data else None,

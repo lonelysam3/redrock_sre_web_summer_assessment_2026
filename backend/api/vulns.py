@@ -536,6 +536,11 @@ def _verify_single_vuln(v: Vulnerability):
 
     if reports:
         report = reports[0]
+        # 空结果（模型未产出判定）不覆盖已有证据，防止瞬时故障抹掉好数据
+        if not report.verified_payload and not report.evidence \
+                and (v.ai_payload or v.ai_payload_evidence):
+            db.session.rollback()
+            return
         v.ai_payload = report.verified_payload
         v.ai_payload_evidence = report.evidence
         if report.result == VerificationResult.CONFIRMED:
