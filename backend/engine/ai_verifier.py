@@ -170,21 +170,11 @@ class AIVerifier:
 
         return reports
 
-    def _static_payload_fallback(self, vuln_type: str) -> tuple[str, str]:
-        """静态 Payload 模板兜底：AI 未返回 payload 时保证每个漏洞都有 payload。"""
-        from engine.payload_builder import PayloadBuilder
-        plist = PayloadBuilder.STATIC_PAYLOADS.get(vuln_type, [])
-        if not plist:
-            return "", ""
-        p = plist[0]
-        return p.value, p.description
-
     def _ai_verify_with_tools(self, vuln: dict, source_code_map: dict[str, str],
                                vuln_index: int, project_path: str = "",
                                php_version: str = "") -> VerificationReport:
         """使用 MCP 工具进行深度验证（只验证 + 构建 Payload，不生成修复）。"""
         file_path = vuln.get("file_path", "")
-        vuln_type = vuln.get("vuln_type", "")
 
         # 构建上下文
         ctx = ""
@@ -210,26 +200,16 @@ class AIVerifier:
                 }
                 verdict = verdict_map.get(verdict_str, VerificationResult.POTENTIAL)
 
-                # Payload 确定性兜底：AI 不给就上静态模板，保证每个漏洞都有
-                payload = result.get("exploit_payload", "") or ""
-                effect = result.get("payload_effect", "") or ""
-                if not payload:
-                    payload, effect = self._static_payload_fallback(vuln_type)
-                evidence = result.get("evidence", "") or ""
-                if not evidence:
-                    evidence = ("AI 未给出攻击模拟证据，已按不确定处理"
-                                "（Payload 使用静态模板构建）。")
-
                 return VerificationReport(
                     vuln_id=vuln_index,
                     file_path=file_path,
                     line_number=vuln.get("line_number", vuln.get("sink_line", 0)),
-                    vuln_type=vuln_type,
+                    vuln_type=vuln.get("vuln_type", ""),
                     result=verdict,
                     confidence=result.get("confidence", 0.5),
-                    verified_payload=payload,
-                    payload_effect=effect,
-                    evidence=evidence,
+                    verified_payload=result.get("exploit_payload", ""),
+                    payload_effect=result.get("payload_effect", ""),
+                    evidence=result.get("evidence", ""),
                 )
         except Exception as e:
             print(f"[VERIFIER] MCP 验证异常: {e}")
@@ -287,9 +267,6 @@ class AIVerifier:
             result = VerificationResult.POTENTIAL
             confidence = 0.4
 
-        # 启发式回退也保证 payload 非空（静态模板）
-        payload, effect = self._static_payload_fallback(vuln.get("vuln_type", ""))
-
         return VerificationReport(
             vuln_id=vuln_index,
             file_path=vuln.get("file_path", ""),
@@ -297,8 +274,8 @@ class AIVerifier:
             vuln_type=vuln.get("vuln_type", ""),
             result=result,
             confidence=confidence,
-            verified_payload=payload or vuln.get("ai_payload", ""),
-            payload_effect=effect or "启发式判定，未使用 AI 精确验证",
+            verified_payload=vuln.get("ai_payload", ""),
+            payload_effect="启发式判定，未使用 AI 精确验证",
             evidence=f"防护等级: {protection}, 利用难度: {exploit_difficulty}",
             recommendation="",
         )

