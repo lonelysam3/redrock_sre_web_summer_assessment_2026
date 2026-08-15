@@ -32,6 +32,7 @@ Stage 3（AST 分析）→ 结构级语义理解，识别以下模式：
 """
 from dataclasses import dataclass, field
 from enum import Enum
+import ast
 import re
 
 
@@ -329,18 +330,104 @@ class ASTAnalyzer:
                     break
         return findings
 
+    def _php_class_spans(self, source_code: str) -> list[tuple[int, int]]:
+        """
+        粗略定位 PHP class 块的行范围（大括号深度扫描）。
+
+        用于危险函数组合的"同块匹配"：unserialize 与 __destruct 若在同一
+        类块内，即使相隔很远也值得报告（PHP 反序列化 POP 链的典型形态）。
+        跨度定位不精确也没关系——±8 行窗口匹配仍然兜底。
+        """
+        spans: list[tuple[int, int]] = []
+        stack: list[list] = []      # [start_line, body_depth]；body_depth None = 尚未遇到 {
+        depth = 0
+        line = 1
+        i = 0
+        n = len(source_code)
+        state = "code"              # code / sq / dq / line_comment / block_comment
+        at_line_start = True
+        while i < n:
+            ch = source_code[i]
+            nxt = source_code[i + 1] if i + 1 < n else ""
+            if state == "code":
+                if ch == "/" and nxt == "/":
+                    state = "line_comment"; i += 2; continue
+                if ch == "/" and nxt == "*":
+                    state = "block_comment"; i += 2; continue
+                if ch in ("'", '"'):
+                    state = "sq" if ch == "'" else "dq"
+                    at_line_start = False
+                    i += 1; continue
+                if ch == "{":
+                    depth += 1
+                    for entry in stack:
+                        if entry[1] is None:
+                            entry[1] = depth
+                elif ch == "}":
+                    depth -= 1
+                    while stack and stack[-1][1] is not None and stack[-1][1] > depth:
+                        start_line, _ = stack.pop()
+                        spans.append((start_line, line))
+                elif ch == "\n":
+                    line += 1
+                    at_line_start = True
+                    i += 1; continue
+                elif at_line_start and ch == "c":
+                    rest = source_code[i:i + 200]
+                    m = re.match(r"\s*(?:abstract\s+|final\s+)?class\s+\w+", rest)
+                    if m:
+                        stack.append([line, None])
+                if not ch.isspace():
+                    at_line_start = False
+            elif state == "line_comment":
+                if ch == "\n":
+                    state = "code"; line += 1; at_line_start = True
+            elif state == "block_comment":
+                if ch == "*" and nxt == "/":
+                    state = "code"; i += 2; continue
+                if ch == "\n":
+                    line += 1
+            elif state in ("sq", "dq"):
+                if ch == "\\":
+                    i += 2; continue
+                if (state == "sq" and ch == "'") or (state == "dq" and ch == '"'):
+                    state = "code"
+            i += 1
+        return spans
+
+    def _py_func_spans(self, source_code: str) -> list[tuple[int, int]]:
+        """Python 函数行范围（ast 解析，失败返回空列表）。"""
+        try:
+            tree = ast.parse(source_code)
+        except SyntaxError:
+            return []
+        spans = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                spans.append((node.lineno,
+                              getattr(node, "end_lineno", None) or node.lineno))
+        return spans
+
     def _find_dangerous_combos(self, file_path: str, source_code: str,
                                lines: list[str]) -> list[ASTFinding]:
         """
         检测危险函数组合。
 
-        与旧版不同，只在同一窗口（±8 行）内同时出现两个模式才报告，
-        避免"整个文件里某处有 unserialize、另一处有 __destruct"这类
-        高误报的宽松匹配。
+        匹配范围（两者之一即报告）：
+          1. 同一 PHP 类块内（POP 链的典型形态，unserialize 与魔术方法
+             可能相隔很远）
+          2. ±8 行窗口内（邻近出现）
+
+        窗口限制是为了避免"整个文件里某处有 unserialize、另一处有
+        __destruct"这类高误报的宽松匹配。
         """
         findings = []
         window = 8
+        class_spans = self._php_class_spans(source_code) if source_code else []
         reported = set()  # (combo_index, line) 去重
+
+        def same_block(ln1: int, ln2: int) -> bool:
+            return any(s <= ln1 <= e and s <= ln2 <= e for s, e in class_spans)
 
         for combo_idx, (combo_a, combo_b) in enumerate(self.DANGEROUS_COMBOS):
             a_lines = set()
@@ -351,13 +438,14 @@ class ASTAnalyzer:
                 if re.search(combo_b, line, re.IGNORECASE):
                     b_lines.add(i)
 
-            # 两种模式都必须出现，且在同一窗口内相邻
+            # 两种模式都必须出现，且同块或同窗口内相邻
             if not a_lines or not b_lines:
                 continue
             a_sorted = sorted(a_lines)
             b_sorted = sorted(b_lines)
             for ln in a_sorted:
-                near = any(abs(other - ln) <= window for other in b_sorted)
+                near = any(abs(other - ln) <= window or same_block(ln, other)
+                           for other in b_sorted)
                 if not near:
                     continue
                 key = (combo_idx, ln)
@@ -370,7 +458,7 @@ class ASTAnalyzer:
                     file_path=file_path, line_number=ln,
                     pattern=ASTPattern.DANGEROUS_COMBO, confidence=0.7,
                     description=(
-                        f"危险函数组合（行 {ln} 附近 ±{window} 行）："
+                        f"危险函数组合（行 {ln} 同一类块或 ±{window} 行内）："
                         "多个危险调用邻近出现，可能形成漏洞利用链"
                     ),
                     related_vuln_types=["command_execution", "deserialization"],
@@ -830,10 +918,17 @@ class ASTAnalyzer:
         """
         检测 Python eval/exec/compile 邻近组合（CWE-94 代码注入）。
 
-        eval + exec 在同一 ±8 行窗口内出现，通常是动态代码执行利用链。
+        匹配范围（两者之一即报告）：
+          1. 同一函数内（利用链可能跨多行）
+          2. ±8 行窗口内
         """
         findings = []
         window = 8
+        func_spans = self._py_func_spans(source_code) if source_code else []
+
+        def same_func(ln1: int, ln2: int) -> bool:
+            return any(s <= ln1 <= e and s <= ln2 <= e for s, e in func_spans)
+
         for combo_a, combo_b in self.PY_CODE_INJECTION_COMBOS:
             a_lines = set()
             b_lines = set()
@@ -842,18 +937,19 @@ class ASTAnalyzer:
                     a_lines.add(i)
                 if re.search(combo_b, line):
                     b_lines.add(i)
-            # 两种模式都必须出现，且在同一窗口内相邻
+            # 两种模式都必须出现，且同函数或同窗口内
             if not a_lines or not b_lines:
                 continue
             for ln in sorted(a_lines):
-                if any(abs(other - ln) <= window for other in b_lines):
+                if any(abs(other - ln) <= window or same_func(ln, other)
+                       for other in b_lines):
                     findings.append(ASTFinding(
                         file_path=file_path,
                         line_number=ln,
                         pattern=ASTPattern.DANGEROUS_COMBO,
                         confidence=0.8,
                         description=(
-                            f"Python 代码注入组合（行 {ln} 附近 ±{window} 行）："
+                            f"Python 代码注入组合（行 {ln} 同一函数或 ±{window} 行内）："
                             "eval/exec/compile 邻近出现，可能形成动态代码执行利用链"
                         ),
                         related_vuln_types=["code_injection"],

@@ -413,6 +413,21 @@ class TaintTracker:
         sources = self.graph.get_sources()   # 所有 Source 节点
         sinks = self.graph.get_sinks()       # 所有 Sink 节点
 
+        # ---- 污点传播（沿边 BFS）----
+        # 边创建顺序不应影响结果：从每个 source 出发，沿邻接表传播 tainted 标记。
+        # 已被全类型消毒的节点（sanitized_types 含 "all"）不参与传播，保持切断。
+        spread_queue = deque(sources)
+        while spread_queue:
+            cur = spread_queue.popleft()
+            for nxt in self.graph.adjacency.get(cur, []):
+                nxt_node = self.graph.nodes.get(nxt)
+                if not nxt_node or nxt_node.tainted:
+                    continue
+                if "all" in nxt_node.sanitized_types:
+                    continue
+                nxt_node.tainted = True
+                spread_queue.append(nxt)
+
         # 消毒函数集合：如果路径中经过这些函数，则认为数据已被清洗
         visited_pairs = set()  # 避免重复处理相同的 (source, sink) 对
 

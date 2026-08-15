@@ -240,6 +240,7 @@ class PythonScanner:
 
         # ---- 5. 第一阶段：收集 Source / Sink / 赋值关系 ----
         self._visit_sources(tree, tracker, source_code, import_aliases)
+        self._visit_param_sources(tree, tracker, source_code)
         self._visit_sinks(tree, tracker, source_code, import_aliases)
         self._visit_assignments(tree, tracker, source_code, import_aliases)
 
@@ -339,6 +340,45 @@ class PythonScanner:
                     return f"{info['module']}.{info['func']}"
 
         return None
+
+    def _visit_param_sources(self, tree: ast.AST, tracker: TaintTracker,
+                             source_code: str):
+        """
+        函数参数作为不可信来源（保守假设，PySa 风格）。
+
+        任何函数参数都可能被调用方传入用户可控数据。这是跨函数污点流的
+        基础：例如 list_products(query=request.args.get('q'))，query 是
+        被调函数的参数，本地没有 source，若不把参数视为不可信，此类
+        sink 永远无法命中（漏报）。
+
+        self / cls 除外：面向对象方法的自身引用，若被打上污点会导致
+        所有 self.xxx 全部污染，误报爆炸。
+        """
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.Lambda)):
+                continue
+            args = node.args
+            for arg in (list(args.posonlyargs) + list(args.args)
+                        + list(args.kwonlyargs)):
+                if arg.arg in ("self", "cls"):
+                    continue
+                tracker.mark_source(
+                    arg.arg,
+                    source_func="function.parameter",
+                    code=arg.arg,
+                    line=node.lineno,
+                )
+            if args.vararg and args.vararg.arg not in ("self", "cls"):
+                tracker.mark_source(
+                    args.vararg.arg, source_func="function.parameter",
+                    code=args.vararg.arg, line=node.lineno,
+                )
+            if args.kwarg and args.kwarg.arg not in ("self", "cls"):
+                tracker.mark_source(
+                    args.kwarg.arg, source_func="function.parameter",
+                    code=args.kwarg.arg, line=node.lineno,
+                )
 
     # ========================================================================
     # Sink 点扫描
@@ -527,7 +567,21 @@ class PythonScanner:
           1. 普通赋值：  x = y         → mark_assign("x", "y")
           2. 增量赋值：  x += y        → mark_assign("x", "y")
           3. 注解赋值：  x: str = y    → mark_assign("x", "y")
+
+        另做属性读取传播：obj.attr —— obj 污染则 obj.attr 也污染。
+        例如 order = Order.query.get_or_404(order_id)，order 被污染后
+        order.notes 也应视为污点，流向 render_template_string 即 SSTI。
         """
+        # ---- 属性读取传播：obj.attr ← obj ----
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                base = self._name_of(node.value)
+                if base:
+                    code = ast.get_source_segment(source_code, node) or ""
+                    tracker.mark_assign(self._make_var_name(node), base,
+                                        reason="attr_read", code=code,
+                                        line=node.lineno)
+
         for node in ast.walk(tree):
             # ---- 普通赋值：x = expr ----
             if isinstance(node, ast.Assign):
