@@ -186,17 +186,16 @@ class PayloadBuilder:
                 injection_point=self._describe_injection_point(v),
             )
 
-            # 1. 静态模板 Payload
+            # 1. 静态模板 Payload（兜底，排在后面）
             static = self.STATIC_PAYLOADS.get(vuln_type, [])
             ps.payloads.extend(static)
 
-            # 2. AI 增强 Payload（如果可用）
+            # 2. AI 增强 Payload（如果可用）—— 插到最前面，优先使用 AI 定制的
             if self.ai_client and self.ai_client.is_configured():
                 ai_payloads = self._ai_enhance_payloads(v, source_code_map)
-                for ap in ai_payloads:
-                    # 与静态 Payload 去重
+                for ap in reversed(ai_payloads):
                     if not any(p.value == ap.value for p in ps.payloads):
-                        ps.payloads.append(ap)
+                        ps.payloads.insert(0, ap)
 
             payload_sets.append(ps)
 

@@ -98,6 +98,9 @@ VERIFY_TEMPLATE = """## 漏洞验证任务（不修改代码）
 ### 漏洞类型说明
 {description}
 
+### 候选 Payload（预构建，供参考选用或改进）
+{payload_candidates}
+
 ---
 
 请使用工具探索代码，为漏洞构建攻击 Payload 并模拟攻击过程，然后输出 JSON：
@@ -449,6 +452,7 @@ class AIClient:
     def verify_with_tools(
         self, vuln: dict, context_code: str = "",
         php_version: str = "", project_path: str = "",
+        payload_candidates: str = "",
         max_tool_rounds: int = 4,
     ) -> dict | None:
         """
@@ -505,6 +509,7 @@ class AIClient:
             description=VULN_TYPE_DESCRIPTIONS.get(vuln_type, ""),
             php_version_context=php_ctx,
             context_code=context_code,
+            payload_candidates=payload_candidates or "（无）",
         )
 
         return self._run_tool_loop(
