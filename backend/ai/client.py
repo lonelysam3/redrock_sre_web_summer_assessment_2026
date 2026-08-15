@@ -352,7 +352,7 @@ class AIClient:
             if has_tools:
                 system_with_tools += "\n\n" + tool_prompt
 
-            response = self._chat_raw(conversation_history, system_prompt=system_with_tools, max_tokens=8192)
+            response = self._chat_raw_retry(conversation_history, system_prompt=system_with_tools, max_tokens=8192)
             if not response:
                 print(f"[MCP] 第 {round_num+1} 轮 AI 无响应")
                 break
@@ -408,8 +408,31 @@ class AIClient:
             if parsed and not is_tool_call_result(parsed):
                 final_result = parsed
 
+        # 轮次耗尽仍未得到最终 JSON：追加一轮"强制输出"（不再允许工具调用）
+        if not final_result and has_tools and last_response:
+            print("[MCP] 轮次耗尽，追加强制输出轮")
+            force_prompt = (
+                conversation_history
+                + "\n\n---\n## 最后一轮\n"
+                + last_response
+                + "\n\n请立即输出最终 JSON 结果。不要再调用任何工具，"
+                  "不要使用 ```json 包裹，直接输出纯 JSON。"
+            )
+            forced = self._chat_raw_retry(force_prompt,
+                                    system_prompt=system_with_tools,
+                                    max_tokens=8192)
+            if forced:
+                parsed = self._parse_json(forced)
+                if parsed and not is_tool_call_result(parsed):
+                    final_result = parsed
+                    print("[MCP] 强制输出轮解析成功")
+                else:
+                    self._dump_parse_failure(forced)
+
         if tool_rounds_used == 0 and has_tools and not final_result:
             print(f"[MCP] AI 未调用任何工具且未返回有效 JSON，首轮回复前 200 字符: {last_response[:200] if last_response else 'None'}")
+        if not final_result and last_response:
+            self._dump_parse_failure(last_response)
 
         # 归一化：如果 AI 返回了数组，取第一个 dict 元素
         if isinstance(final_result, list):
@@ -559,7 +582,7 @@ class AIClient:
             if has_tools:
                 system_with_tools += "\n\n" + tool_prompt
 
-            response = self._chat_raw(conversation_history,
+            response = self._chat_raw_retry(conversation_history,
                                        system_prompt=system_with_tools,
                                        max_tokens=8192)
             if not response:
@@ -602,9 +625,49 @@ class AIClient:
         if not final_result and last_response:
             final_result = self._parse_json(last_response)
 
+        # 轮次耗尽仍未得到最终 JSON：追加一轮"强制输出"（不再允许工具调用）
+        if not final_result and tool_executor and last_response:
+            print(f"[{tag}] 轮次耗尽，追加强制输出轮")
+            force_prompt = (
+                conversation_history
+                + "\n\n---\n## 最后一轮\n"
+                + last_response
+                + "\n\n请立即输出最终 JSON 结果。不要再调用任何工具，"
+                  "不要使用 ```json 包裹，直接输出纯 JSON。"
+            )
+            forced = self._chat_raw_retry(force_prompt,
+                                    system_prompt=system_prompt,
+                                    max_tokens=8192)
+            if forced:
+                parsed = self._parse_json(forced)
+                if parsed:
+                    final_result = parsed
+                    print(f"[{tag}] 强制输出轮解析成功")
+                else:
+                    self._dump_parse_failure(forced)
+
+        if not final_result and last_response:
+            self._dump_parse_failure(last_response)
+
         if isinstance(final_result, list):
             final_result = final_result[0] if final_result and isinstance(final_result[0], dict) else None
         return final_result
+
+    def _dump_parse_failure(self, text: str):
+        """把未能解析的原始 AI 返回存盘，便于事后诊断。"""
+        try:
+            import os as _os
+            dbg_dir = _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                "ai_parse_failures")
+            _os.makedirs(dbg_dir, exist_ok=True)
+            with open(_os.path.join(dbg_dir, "latest.txt"), "a",
+                      encoding="utf-8") as _f:
+                _f.write("\n\n===== " + __import__("datetime").datetime.now()
+                         .isoformat() + " =====\n")
+                _f.write(text)
+        except Exception:
+            pass
 
     # ================================================================
     # 批量漏洞分析
@@ -720,6 +783,17 @@ class AIClient:
             print(f"[ERROR] AI API 调用失败: {e}")
             return None
 
+    def _chat_raw_retry(self, prompt: str, system_prompt: str = "",
+                        max_tokens: int = 8192, retries: int = 2) -> str | None:
+        """带重试的原始调用：模型偶尔返回空内容（如工具轮次后），重试可显著降低失败率。"""
+        for attempt in range(retries + 1):
+            resp = self._chat_raw(prompt, system_prompt=system_prompt,
+                                  max_tokens=max_tokens)
+            if resp and resp.strip():
+                return resp
+            print(f"[AI] 空响应，重试 {attempt + 1}/{retries}")
+        return None
+
     def _parse_json(self, text: str) -> dict | list | None:
         """从 AI 回复中提取 JSON（多策略兼容 + 自动修复）"""
         if not text:
@@ -786,17 +860,7 @@ class AIClient:
             return fixed
 
         # 调试：保存解析失败的原始返回，便于定位模型输出格式问题
-        try:
-            import os as _os
-            dbg_dir = _os.path.join(
-                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-                "ai_parse_failures")
-            _os.makedirs(dbg_dir, exist_ok=True)
-            with open(_os.path.join(dbg_dir, "latest.txt"), "w",
-                      encoding="utf-8") as _f:
-                _f.write(text)
-        except Exception:
-            pass
+        self._dump_parse_failure(text)
 
         print(f"[WARN] 无法解析 AI 返回: {text[:200]}...")
         return None
@@ -982,10 +1046,13 @@ def is_tool_call_result(obj) -> bool:
     """
     判断解析结果是否为 MCP 工具调用请求而非漏洞分析结果。
 
-    工具调用形状：{"name": "...", "arguments": {...}}
+    工具调用形状：{"name": "...", "arguments": {...}}，或它们的数组
+    （parse_tool_calls 支持 `[{...}]` 格式）。
     分析结果形状：含 is_vulnerable / root_cause / verdict / fix_recommendation 等字段。
     用于防止工具调用被误存为 ai_analysis。
     """
+    if isinstance(obj, list):
+        return bool(obj) and all(is_tool_call_result(x) for x in obj)
     if not isinstance(obj, dict):
         return False
     if "name" in obj and "arguments" in obj:
