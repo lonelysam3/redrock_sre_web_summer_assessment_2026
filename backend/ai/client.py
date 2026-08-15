@@ -756,6 +756,7 @@ class AIClient:
             if start == -1:
                 continue
             depth = 0
+            found = False
             for i in range(start, len(text)):
                 if text[i] == open_char:
                     depth += 1
@@ -770,7 +771,14 @@ class AIClient:
                             fixed = self._repair_json(candidate)
                             if fixed:
                                 return fixed
+                        found = True
                         break
+            if not found:
+                # 括号未平衡（截断）：对从首个括号到结尾的整体做修复，
+                # 避免内层小对象（如数组）被误当成完整结果
+                fixed = self._repair_json(text[start:])
+                if fixed:
+                    return fixed
 
         # 策略 4：修复常见 JSON 问题后再解析
         fixed = self._repair_json(text)
@@ -913,6 +921,11 @@ class AIClient:
                 else:
                     out.append(ch)
             i += 1
+        # 截断在字符串中间：补上收尾引号（JSON 常见于 max_tokens 截断）
+        if in_string:
+            if escape_next and out and out[-1] == '\\':
+                out.pop()   # 悬空反斜杠会转义我们补的引号，丢弃
+            out.append('"')
         return ''.join(out)
 
     @staticmethod
