@@ -11,7 +11,7 @@ Supports **Python / PHP / C / C++**, covering SQL injection, command execution, 
 - **Project upload**: upload source archives (zip/tar.gz), auto-extract and scan by language
 - **Static scan engine**: project-wide interprocedural taint analysis (cross-file/cross-function data flow) + data-flow enrichment + AST pattern analysis + call-graph supplement + template XSS analysis + ZIP Slip detection
 - **AI deep analysis**: every vulnerability gets root cause, attack methods and fix recommendations (the AI explores the source with MCP tools)
-- **AI payload verification**: the AI builds attack vectors; for web-exploitable vulns the platform **launches the target app in a local sandbox** and the AI sends real HTTP attack requests, comparing responses to judge whether the vulnerability is real
+- **AI payload verification**: the AI builds attack vectors; for web-exploitable vulns the platform **launches the target app in a local sandbox** and the AI sends real HTTP attack requests (multi-step attack chains, auth bypass, multipart uploads), comparing responses to judge whether the vulnerability is real; final verdicts are collected uniformly (confirmed/uncertain/false positive)
 - **AI auto-fix**: the AI generates fixes and applies them directly to the source (automatic `.bak` backup before editing), either auto-triggered per scan or manually per finding
 - **Version-aware rule engine**: PHP/Python/C/C++ rules activate and re-weight by target version
 - **Web UI**: projects → project detail → scan results, three-level pages; severity/verdict sorting and filtering, data-flow display, dark/light themes (HarmonyOS Sans font, glassmorphism/aurora effects)
@@ -120,9 +120,11 @@ Each vulnerability (or "analyze all") invokes the AI, which explores the source 
 | `search_dangerous_calls` | find dangerous function calls in a file |
 | `search_user_inputs` | locate user-input entry points |
 | `trace_variable_flow` | trace a variable's propagation path |
-| `read_file_region` | read a line range of a file |
+| `read_file_region` | read a line range of a file (relative paths and filename-suffix fallback supported) |
 | `search_project` | cross-file regex search |
 | `list_project_files` | list project files |
+| `run_target_app` / `stop_target_app` | start/stop the target app in the sandbox (verify flow only) |
+| `send_http_request` | send HTTP requests (query params, form bodies, multipart file uploads) |
 
 Output: root cause, attack methods, fix recommendations, and an initial verdict (confirmed / potential / false_positive).
 
@@ -130,11 +132,17 @@ Output: root cause, attack methods, fix recommendations, and an initial verdict 
 
 Static analysis can only *guess* whether e.g. a SQL injection is exploitable. The platform ships a **sandbox executor** so the AI can attack for real:
 
-1. **Platform pre-start**: for web-attackable vuln types (SQLi/XSS/SSRF/SSTI/path traversal/open redirect/…), the target project is copied to a temp directory and launched as a subprocess (127.0.0.1, random port; missing dependencies are auto-installed on demand and cached) before verification begins
-2. **AI attacks**: the model sends a baseline request via the MCP tool `send_http_request`, then fires attack payloads and compares status codes/errors/content; `run_target_app` / `stop_target_app` control the app lifecycle
-3. **Verdict & evidence**: outputs `verdict` (confirmed/potential/false_positive), `confidence`, `exploit_payload`, `payload_effect` and the full evidence chain (baseline vs attack response comparison)
+1. **Platform pre-start**: for web-attackable vuln types (SQLi/XSS/SSRF/SSTI/path traversal/open redirect/deserialization/…), the target project is copied to a temp directory and launched as a subprocess (127.0.0.1, random port; missing dependencies are auto-installed on demand and cached) before verification begins
+2. **AI attacks**: the model sends a baseline request via the MCP tool `send_http_request`, then fires attack payloads and compares status codes/errors/content; `run_target_app` / `stop_target_app` control the app lifecycle. Capabilities:
+   - **Multi-step attack chains**: register → login → order → view, firing multiple requests per round (8 verify rounds fit a full chain)
+   - **Auth bypass**: for login-gated routes the AI first searches seed data / init scripts for test accounts, logs in, then attacks
+   - **Multipart file uploads**: `send_http_request`'s `files` param uploads malicious files (e.g. pickle RCE payloads), covering deserialization / file-upload vulns
+   - **Relative path resolution**: MCP file-reading tools accept relative paths and filename-suffix fallback
+3. **Verdict & evidence**: outputs `verdict` (confirmed/potential/false_positive), `confidence`, `exploit_payload` and the full evidence chain (baseline vs attack response comparison)
 
-**Live example** (SQL injection in the demo store app):
+**Live examples** (demo store app):
+
+SQL injection:
 
 | Request | Response | Conclusion |
 |---|---|---|
@@ -144,7 +152,25 @@ Static analysis can only *guess* whether e.g. a SQL injection is exploitable. Th
 | `/?q=' UNION SELECT sql FROM sqlite_master--` | full schema leaked | schema readable |
 | `/?q=' UNION SELECT email\|\|':'\|password FROM user--` | user credentials leaked | **data exfiltrated** |
 
-Final verdict `confirmed @ 1.0` with a complete evidence chain.
+SSTI (multi-step chain + escalation):
+
+| Step | Request | Response |
+|---|---|---|
+| Register/login | POST /auth/register + /auth/login | 302, session established |
+| Order #1 | notes=`{{7*7}}` | receipt page shows **49** (template evaluated) |
+| Escalate | notes=`{{config.__class__.__init__.__globals__['os'].popen('id').read()}}` | receipt page shows **uid=0(root)** |
+
+Path traversal (auth-gated): after logging in as admin/admin123 (a seeded test account), `GET /admin/logs?path=/etc/passwd` returns the full passwd file (432 bytes vs 108-byte baseline log).
+
+### 4.1 Verdict Collection
+
+After the AI finishes building payloads and simulating attacks, final verdicts are written back to the UI fields uniformly:
+
+| Verification result | Recorded as | Card badge | Stat counter |
+|---|---|---|---|
+| confirmed | 确认漏洞 (confirmed) | ✅ confirmed | AI confirmed +1 |
+| potential | 不确定 (uncertain) | ⚠️ uncertain | AI uncertain +1 |
+| false_positive | 误报 (false positive) | ❌ false positive | — |
 
 > Note: the platform targets **vulnerability detection in normal code**; the sandbox exists to prove exploitability (real attack requests, verified by response). Scanned code runs in a temp copy, listens only on a localhost random port, has timeout protection, and is cleaned up on exit.
 

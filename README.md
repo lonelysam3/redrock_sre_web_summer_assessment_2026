@@ -11,7 +11,7 @@
 - **项目上传**：上传源码压缩包（zip/tar.gz），自动解压、按语言扫描
 - **静态扫描引擎**：项目级过程间污点分析（跨文件/跨函数数据流）+ 数据流富化 + AST 模式分析 + 调用图补充 + 模板 XSS 分析 + ZIP Slip 检测
 - **AI 深度分析**：每个漏洞自动生成形成原因、攻击方式、修复建议（AI 用 MCP 工具探索源码）
-- **AI Payload 验证**：AI 构建攻击向量；对 Web 类漏洞，平台在**本地沙箱中真实启动目标应用**，AI 发送实际 HTTP 攻击请求、对比响应判定漏洞真假
+- **AI Payload 验证**：AI 构建攻击向量；对 Web 类漏洞，平台在**本地沙箱中真实启动目标应用**，AI 发送实际 HTTP 攻击请求（支持多步攻击链、认证绕过、multipart 上传）、对比响应判定漏洞真假，最终结果统一收集（确认/不确定/误报）
 - **AI 自动修复**：AI 生成修复代码并直接应用到源码（改前自动 `.bak` 备份），可勾选自动执行或对单个漏洞手动触发
 - **版本感知规则引擎**：PHP/Python/C/C++ 按目标版本动态激活规则、调整严重度
 - **Web 界面**：项目列表 → 项目详情 → 扫描结果三级页面；严重度/验证状态排序筛选、数据流展示、深浅色主题（HarmonyOS Sans 字体、玻璃拟态动效）
@@ -112,9 +112,11 @@
 | `search_dangerous_calls` | 搜索文件中的危险函数调用 |
 | `search_user_inputs` | 定位用户输入入口 |
 | `trace_variable_flow` | 追踪变量传播路径 |
-| `read_file_region` | 读取文件指定行区间 |
+| `read_file_region` | 读取文件指定行区间（支持相对路径/文件名后缀回退） |
 | `search_project` | 跨文件正则搜索 |
 | `list_project_files` | 查看项目文件清单 |
+| `run_target_app` / `stop_target_app` | 启动/停止沙箱中的目标应用（仅验证流程） |
+| `send_http_request` | 发 HTTP 请求（支持查询参数、表单体、multipart 文件上传） |
 
 输出：漏洞形成原因、攻击方式、修复建议，以及初步判定（confirmed / potential / false_positive）。
 
@@ -122,11 +124,17 @@
 
 静态分析对 SQL 注入这类漏洞只能"猜"是否可利用。平台内置**沙箱执行器**，让 AI 真刀真枪地攻击：
 
-1. **平台预启动**：对 Web 可攻击的漏洞类型（SQLi/XSS/SSRF/SSTI/路径穿越/开放重定向等），验证开始前自动把目标项目复制到临时目录、作为子进程启动（127.0.0.1 随机端口，缺失依赖自动按需安装并缓存）
-2. **AI 发动攻击**：模型通过 MCP 工具 `send_http_request` 先发正常请求做基线，再发攻击 Payload，对比状态码/报错/内容差异；`run_target_app` / `stop_target_app` 控制应用生命周期
-3. **判定与证据**：输出 `verdict`（confirmed/potential/false_positive）、`confidence`、`exploit_payload`、`payload_effect` 和完整证据链（基线 vs 攻击响应对比）
+1. **平台预启动**：对 Web 可攻击的漏洞类型（SQLi/XSS/SSRF/SSTI/路径穿越/开放重定向/反序列化等），验证开始前自动把目标项目复制到临时目录、作为子进程启动（127.0.0.1 随机端口；缺失依赖按需自动安装并缓存）
+2. **AI 发动攻击**：模型通过 MCP 工具 `send_http_request` 先发正常请求做基线，再发攻击 Payload，对比状态码/报错/内容差异；`run_target_app` / `stop_target_app` 控制应用生命周期。支持的能力：
+   - **多步攻击链**：注册→登录→下单→访问，一轮内连续发多个请求（验证轮数 8 轮，装得下完整链）
+   - **认证门禁绕过**：路由需要登录时，AI 会先搜索种子数据/初始化脚本里的测试账户，登录后再攻击
+   - **multipart 文件上传**：`send_http_request` 的 `files` 参数可上传恶意文件（如 pickle RCE 载荷），覆盖反序列化/文件上传类漏洞
+   - **相对路径解析**：MCP 读文件工具支持相对路径与文件名后缀回退，AI 不会因路径写错而找不到接口
+3. **判定与证据**：输出 `verdict`（confirmed/potential/false_positive）、`confidence`、`exploit_payload` 和完整证据链（基线 vs 攻击响应对比）
 
-**实测例子**（演示商店应用 SQL 注入）：
+**实测例子**（演示商店应用）：
+
+SQL 注入：
 
 | 请求 | 响应 | 结论 |
 |---|---|---|
@@ -136,7 +144,25 @@
 | `/?q=' UNION SELECT sql FROM sqlite_master--` | 泄露全部表结构 | schema 可读 |
 | `/?q=' UNION SELECT email\|\|':'\|password FROM user--` | 泄露用户凭据 | **数据窃取成功** |
 
-最终判定 `confirmed @ 1.0`，证据链完整。
+SSTI（多步攻击链 + 提权）：
+
+| 步骤 | 请求 | 响应 |
+|---|---|---|
+| 注册/登录 | POST /auth/register + /auth/login | 302，建立会话 |
+| 下单一 | notes=`{{7*7}}` | 回执页显示 **49**（模板表达式被执行） |
+| 提权 | notes=`{{config.__class__.__init__.__globals__['os'].popen('id').read()}}` | 回执页显示 **uid=0(root)** |
+
+路径穿越（认证门禁）：登录 admin/admin123（seed 数据里的测试账户）后，`GET /admin/logs?path=/etc/passwd` 返回完整 passwd（432 字节 vs 基线日志 108 字节）。
+
+### 4.1 判定结果收集
+
+AI 完成 Payload 构建与模拟攻击后，最终判定统一写回页面展示字段：
+
+| 验证结果 | 记为 | 页面徽章 | 统计卡片 |
+|---|---|---|---|
+| confirmed | 确认漏洞 | ✅ 确认漏洞 | AI确认漏洞 +1 |
+| potential | 不确定 | ⚠️ 不确定 | AI不确定 +1 |
+| false_positive | 误报 | ❌ 误报 | — |
 
 > 说明：平台定位是**正常代码的漏洞检测**，沙箱用于实证漏洞（真实发出攻击请求验证响应）。被扫描代码在临时副本中运行、只监听本机随机端口、有超时保护、退出自动清理。
 
