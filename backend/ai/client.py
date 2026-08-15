@@ -58,6 +58,16 @@ VERIFY_SYSTEM_PROMPT = """你是一名资深渗透测试专家。
 - SSRF：让应用请求内网地址（如 127.0.0.1:自身端口）观察响应
 - XSS：发送 <script> 观察是否原样回显在响应中
 - 对比基线响应与攻击响应，把关键差异写进 evidence
+- **文件上传/反序列化攻击**：用 send_http_request 的 files 参数发送
+  multipart 文件：{"字段名": {"filename": "a.pkl", "content": "恶意 pickle 字节"}}。
+  反序列化 RCE 用 pickle __reduce__（os.system）；上传前先登录管理员，
+  上传后访问对应页面或 static/ 下新写的文件验证命令已执行
+- **路由需要登录/管理员权限时**：先用 list_project_files / read_file_region /
+  search_project 找到种子数据、初始化脚本或注释里的测试账户（常见
+  admin/admin123、test/test、dave/...），再用 send_http_request 完成
+  注册或登录（注意用表单 POST，必要时带 session cookie），然后再发
+  攻击请求。多步攻击链（注册→登录→下单→访问）要在一轮里连续发多个
+  send_http_request 以节省轮次。
 
 ## 重要约束
 
@@ -467,7 +477,7 @@ class AIClient:
     def verify_with_tools(
         self, vuln: dict, context_code: str = "",
         php_version: str = "", project_path: str = "",
-        max_tool_rounds: int = 6,
+        max_tool_rounds: int = 8,
     ) -> dict | None:
         """
         使用 MCP 工具自主验证漏洞可利用性（只验证，不修改代码）。

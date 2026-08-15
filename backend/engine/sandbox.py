@@ -24,6 +24,7 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
+import uuid
 from pathlib import Path
 
 STARTUP_TIMEOUT = 40        # 应用启动最长等待（秒）
@@ -192,16 +193,44 @@ class SandboxApp:
 
     def request(self, method: str, path: str, params: dict | None = None,
                 data: str | None = None,
+                files: dict | None = None,
                 headers: dict | None = None) -> dict:
-        """向沙箱应用发一次 HTTP 请求，返回响应摘要。"""
+        """向沙箱应用发一次 HTTP 请求，返回响应摘要。
+
+        files: {"字段名": {"filename": "...", "content": "..."}} →
+        构造 multipart/form-data 请求体（用于文件上传类攻击）。
+        """
         if not self.proc or self.proc.poll() is not None:
             return {"success": False, "error": "应用未运行，请先 run_target_app"}
         url = f"http://127.0.0.1:{self.port}{path if path.startswith('/') else '/' + path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
+        req_headers = dict(headers or {})
+        body = None
+        if files:
+            # 取第一个文件字段构造 multipart 体
+            field, fdesc = next(iter(files.items()))
+            if isinstance(fdesc, dict):
+                filename = fdesc.get("filename", "upload.bin")
+                content = fdesc.get("content", "")
+                if isinstance(content, str):
+                    content = content.encode("utf-8", errors="ignore")
+            else:
+                filename = "upload.bin"
+                content = str(fdesc).encode("utf-8", errors="ignore")
+            boundary = "----sandbox_boundary_" + uuid.uuid4().hex
+            body = (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{field}"; '
+                f'filename="{filename}"\r\n'
+                f"Content-Type: application/octet-stream\r\n\r\n"
+            ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
+            req_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        else:
+            body = (data or "").encode("utf-8") if data else None
         req = urllib.request.Request(url, method=method.upper(),
-                                     data=(data or "").encode("utf-8") if data else None,
-                                     headers=headers or {})
+                                     data=body,
+                                     headers=req_headers)
         t0 = time.time()
         try:
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:

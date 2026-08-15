@@ -169,6 +169,7 @@ MCP_TOOLS: list[MCPTool] = [
                 "path": {"type": "string", "description": "请求路径，如 / 或 /product/1"},
                 "params": {"type": "object", "description": "查询参数对象"},
                 "data": {"type": "string", "description": "POST 表单体（key=value&...）"},
+                "files": {"type": "object", "description": "multipart 文件上传，如 {表单字段名: {'filename': 'a.pkl', 'content': '...'}}"},
             },
             "required": ["path"],
         },
@@ -271,13 +272,34 @@ class MCPToolExecutor:
                     pass
 
     def _read_file(self, file_path: str) -> tuple[list[str], str]:
-        """读取文件，返回 (行列表, 源码)"""
+        """读取文件，返回 (行列表, 源码)。
+
+        支持相对路径（相对项目根解析）与绝对路径；
+        匹配不到时按文件名/路径后缀在源码索引中回退查找。
+        """
         source = self._source_map.get(file_path, "")
-        if not source and Path(file_path).exists():
-            try:
-                source = Path(file_path).read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                pass
+        if not source:
+            # 相对路径 → 拼项目根
+            fp = Path(file_path)
+            if not fp.is_absolute() and self.project_path:
+                candidate = Path(self.project_path) / fp
+                if str(candidate) in self._source_map:
+                    file_path = str(candidate)
+                    source = self._source_map[file_path]
+            if not source and fp.exists():
+                try:
+                    source = fp.read_text(encoding="utf-8", errors="ignore")
+                    file_path = str(fp)
+                except Exception:
+                    pass
+            if not source:
+                # 回退：按规范化路径后缀在索引里找
+                norm = str(fp).replace("\\", "/").lower()
+                for key, val in self._source_map.items():
+                    if key.replace("\\", "/").lower().endswith(norm):
+                        source = val
+                        file_path = key
+                        break
         lines = source.split("\n")
         return lines, source
 
@@ -577,11 +599,18 @@ class MCPToolExecutor:
                 params = json.loads(params)
             except Exception:
                 params = None
+        files = arguments.get("files")
+        if isinstance(files, str):
+            try:
+                files = json.loads(files)
+            except Exception:
+                files = None
         resp = self._sandbox.request(
             method=arguments.get("method", "GET"),
             path=arguments.get("path", "/"),
             params=params if isinstance(params, dict) else None,
             data=arguments.get("data"),
+            files=files if isinstance(files, dict) else None,
         )
         # 响应摘要限制体积，避免 token 爆炸
         if isinstance(resp.get("body"), str):
