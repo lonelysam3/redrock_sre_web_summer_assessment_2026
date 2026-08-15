@@ -12,7 +12,7 @@
   POST   /api/vulns/<id>/analyze — 手动触发 AI 分析
 """
 from flask import Blueprint, request, jsonify
-from models import db, Vulnerability
+from models import db, Vulnerability, SEVERITY_RANK
 
 # 创建蓝图，挂载到 /api/vulns
 vulns_bp = Blueprint("vulns", __name__)
@@ -49,8 +49,8 @@ def list_vulns():
     if status:
         query = query.filter_by(status=status)
 
-    # 按严重程度倒序：critical > high > medium > low
-    vulns = query.order_by(Vulnerability.severity.desc()).all()
+    # 按严重程度排序：critical > high > medium > low，同级别按行号
+    vulns = query.order_by(SEVERITY_RANK, Vulnerability.line_number).all()
     return jsonify([_serialize(v) for v in vulns])
 
 

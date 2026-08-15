@@ -11,6 +11,7 @@
   Project (1) ──< (N) ScanTask (1) ──< (N) Vulnerability
 """
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import case
 from datetime import datetime, timezone, timedelta
 
 # 中国时区 UTC+8
@@ -132,6 +133,17 @@ class Vulnerability(db.Model):
     # ---- 最终判定 ----
     status = db.Column(db.String(20), default="pending")                   # pending(待处理) / confirmed(AI验证成功) / potential(AI无法确认) / false_positive(误报) / reviewed(已审查)
     created_at = db.Column(db.DateTime, default=now_cn)           # 记录创建时间
+
+
+# 严重程度排序表达式：critical > high > medium > low。
+# 不能直接按 severity 字符串排序——字母序会把 critical 排到最后。
+SEVERITY_RANK = case(
+    (Vulnerability.severity == "critical", 0),
+    (Vulnerability.severity == "high", 1),
+    (Vulnerability.severity == "medium", 2),
+    (Vulnerability.severity == "low", 3),
+    else_=4,
+)
 
 
 class AISettings(db.Model):

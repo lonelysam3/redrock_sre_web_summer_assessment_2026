@@ -459,7 +459,7 @@
                 <option value="low">Low</option>
             </select>
             <input type="text" id="filter-file" placeholder="搜索文件名..." oninput="applyFilters()">
-            <button class="btn btn-sm" id="sort-by-ai-btn" title="按 AI 分析结果排序：确认漏洞排最前">分类排序</button>
+            <button class="btn btn-sm" id="sort-by-ai-btn" title="排序：严重程度优先，同级别内 AI 结果靠前（误报排最后）">分类排序</button>
         </div>
 
         <!-- ========== 漏洞列表 ========== -->
@@ -748,7 +748,8 @@
         }
 
         /**
-         * AI 分类排序：确认漏洞 → 不确定 → 误报 → 未分析
+         * 分类排序：严重程度为主键（critical 永远在最上），
+         * 同级别内按 AI 结果排序：确认 → 不确定 → 未分析 → 误报
          */
         function sortByAI() {
             var list = document.getElementById('vuln-list');
@@ -758,28 +759,26 @@
             var arr = [];
             for (var i = 0; i < items.length; i++) arr.push(items[i]);
 
-            // 检测是否有已 AI 分析的漏洞
-            var hasAI = false;
-            for (var k = 0; k < arr.length; k++) {
-                var ai = arr[k].getAttribute('data-ai') || 'unanalyzed';
-                if (ai !== 'unanalyzed') { hasAI = true; break; }
-            }
-
-            var aiOrder = { 'true': 0, 'uncertain': 1, 'false': 2, 'unanalyzed': 3 };
+            var aiOrder = { 'true': 0, 'uncertain': 1, 'unanalyzed': 2, 'false': 3 };
             var sevOrder = { 'critical': 0, 'high': 1, 'medium': 2, 'low': 3 };
 
+            // 注意：不能用 (map[x] || 4) 兜底——0 是 falsy，
+            // 会导致 critical（rank 0）被当成未知级别排到最后。
+            function rank(map, key) {
+                var v = map[key];
+                return (v === undefined || v === null) ? 4 : v;
+            }
+
             arr.sort(function(a, b) {
-                if (hasAI) {
-                    // 已 AI 分析：AI 状态优先，严重程度次之
-                    var va = a.getAttribute('data-ai') || 'unanalyzed';
-                    var vb = b.getAttribute('data-ai') || 'unanalyzed';
-                    var aiDiff = (aiOrder[va] || 4) - (aiOrder[vb] || 4);
-                    if (aiDiff !== 0) return aiDiff;
-                }
-                // 未 AI 分析或同组内：按严重程度排序
+                // 主键：严重程度
                 var sa = a.getAttribute('data-severity') || 'low';
                 var sb = b.getAttribute('data-severity') || 'low';
-                return (sevOrder[sa] || 4) - (sevOrder[sb] || 4);
+                var sevDiff = rank(sevOrder, sa) - rank(sevOrder, sb);
+                if (sevDiff !== 0) return sevDiff;
+                // 次键：AI 结果（误报排最后）
+                var va = a.getAttribute('data-ai') || 'unanalyzed';
+                var vb = b.getAttribute('data-ai') || 'unanalyzed';
+                return rank(aiOrder, va) - rank(aiOrder, vb);
             });
             for (var j = 0; j < arr.length; j++) list.appendChild(arr[j]);
         }

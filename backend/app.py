@@ -39,7 +39,7 @@ from flask import Flask
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import Config
-from models import db, Project, ScanTask, Vulnerability, AISettings, now_cn
+from models import db, Project, ScanTask, Vulnerability, AISettings, now_cn, SEVERITY_RANK
 from engine import scan_project
 from ai.client import get_ai_client, reset_ai_client
 
@@ -221,10 +221,10 @@ def create_app() -> Flask:
         if not scan:
             return "扫描任务不存在", 404
 
-        # 获取该次扫描的所有漏洞，按严重程度排列
+        # 获取该次扫描的所有漏洞，按严重程度排列（critical > high > medium > low）
         vulns = (Vulnerability.query
                  .filter_by(scan_task_id=scan_id)
-                 .order_by(Vulnerability.severity.desc(),    # 严重程度优先
+                 .order_by(SEVERITY_RANK,            # 严重程度优先（CASE 表达式，非字母序）
                            Vulnerability.line_number)         # 行号其次
                  .all())
 
