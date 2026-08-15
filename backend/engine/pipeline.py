@@ -209,6 +209,19 @@ class AnalysisPipeline:
         print(f"[PIPELINE] Stage 3 完成: {result.stage3_safe_patterns} 安全模式, "
               f"{stage3_added} 个补充漏洞")
 
+        # 3c: 模板文件 XSS 分析（.html / .jinja2 等，独立于 .py 污点追踪）
+        from engine.template_analyzer import TemplateAnalyzer
+        template_vulns = TemplateAnalyzer().analyze(project_path)
+        existing_keys = {(v["file_path"], v.get("line_number", 0), v["vuln_type"])
+                         for v in all_vulns}
+        stage3c_added = 0
+        for v in template_vulns:
+            key = (v["file_path"], v["line_number"], v["vuln_type"])
+            if key not in existing_keys:
+                all_vulns.append(v)
+                stage3c_added += 1
+        print(f"[PIPELINE] Stage 3c 完成: {stage3c_added} 个模板 XSS")
+
         # ================================================================
         # Stage 4: 调用图 — 补充
         # ================================================================

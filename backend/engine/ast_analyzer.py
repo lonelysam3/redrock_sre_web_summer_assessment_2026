@@ -49,6 +49,7 @@ class ASTPattern(Enum):
     MAGIC_METHOD_CHAIN = "magic_method_chain"           # 魔术方法链
     HARDCODED_CREDENTIALS = "hardcoded_credentials"     # 硬编码凭据
     DEBUG_MODE = "debug_mode"                           # 调试模式开启
+    ZIP_SLIP = "zip_slip"                               # ZIP Slip 解压路径穿越
 
 
 @dataclass
@@ -169,6 +170,18 @@ class ASTAnalyzer:
         re.compile(r'app\.run\s*\([^)]*debug\s*=\s*True', re.IGNORECASE),  # Flask app.run(debug=True)
     ]
 
+    # ZIP Slip：解压 API 未校验成员路径（CWE-22 变体）
+    ZIP_SLIP_PATTERNS = [
+        re.compile(r'\.extractall\s*\('),
+        re.compile(r'\.extract\s*\('),
+        re.compile(r'shutil\.unpack_archive\s*\('),
+    ]
+    # 同文件内出现这些成员名校验模式，视为已防护，不报
+    ZIP_SLIP_SAFE_MARKERS = re.compile(
+        r'is_within_directory|_safe_extract|member\.name\.startswith|'
+        r'os\.path\.commonpath|realpath\(',
+    )
+
     def analyze(self, source_code_map: dict[str, str]) -> list[ASTFinding]:
         """
         对所有源文件执行 AST 模式分析。
@@ -263,6 +276,45 @@ class ASTAnalyzer:
         # 11. Python 代码注入组合（eval/exec/compile 邻近）
         findings.extend(self._find_py_code_injection_combos(file_path, source_code, lines))
 
+        # 12. ZIP Slip 解压路径穿越
+        findings.extend(self._find_zip_slip(file_path, source_code, lines))
+
+        return findings
+
+    def _find_zip_slip(self, file_path: str, source_code: str,
+                       lines: list[str]) -> list[ASTFinding]:
+        """
+        ZIP Slip（CWE-22 变体）：tarfile/zipfile 解压 API 未校验成员路径。
+
+        压缩包内的成员名由攻击者控制（../ 路径穿越、绝对路径、符号链接），
+        直接 extract/extractall 到磁盘即任意文件写入。这是"无条件"型检测：
+        归档内容本身就是不可信输入，与调用方是否传了用户参数无关。
+        同文件内出现成员名校验（is_within_directory 等）则不报。
+        """
+        fname = (file_path or "").lower().replace("\\", "/").split("/")[-1]
+        if fname.startswith("test") or fname.endswith("_test.py"):
+            return []
+        if self.ZIP_SLIP_SAFE_MARKERS.search(source_code):
+            return []
+
+        findings = []
+        for i, line in enumerate(lines, 1):
+            for pat in self.ZIP_SLIP_PATTERNS:
+                if pat.search(line):
+                    findings.append(ASTFinding(
+                        file_path=file_path,
+                        line_number=i,
+                        pattern=ASTPattern.ZIP_SLIP,
+                        confidence=0.6,
+                        description=(
+                            f"ZIP Slip（行 {i}）：解压 API 未校验压缩包成员路径，"
+                            "攻击者可构造 ../ 成员名实现任意文件写入/覆盖"
+                        ),
+                        related_vuln_types=["path_traversal"],
+                        evidence=line.strip(),
+                        is_safe=False,
+                    ))
+                    break  # 每行只报一次
         return findings
 
     def _find_parameterized_queries(self, file_path: str, source_code: str,

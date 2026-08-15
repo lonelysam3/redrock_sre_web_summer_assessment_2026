@@ -109,6 +109,16 @@ PYTHON_SINKS: list[Sink] = [
          dangerous_param_index=0),                                                  # os.system(user_input)
     Sink("os", "popen", VulnType.COMMAND_EXECUTION, "os.popen()",
          dangerous_param_index=0),
+    Sink("os", "execv", VulnType.COMMAND_EXECUTION, "os.execv()"),
+    Sink("os", "execve", VulnType.COMMAND_EXECUTION, "os.execve()"),
+    Sink("os", "execl", VulnType.COMMAND_EXECUTION, "os.execl()"),
+    Sink("os", "execlp", VulnType.COMMAND_EXECUTION, "os.execlp()"),
+    Sink("os", "execvp", VulnType.COMMAND_EXECUTION, "os.execvp()"),
+    Sink("os", "spawnl", VulnType.COMMAND_EXECUTION, "os.spawnl()"),
+    Sink("os", "spawnlp", VulnType.COMMAND_EXECUTION, "os.spawnlp()"),
+    Sink("os", "posix_spawn", VulnType.COMMAND_EXECUTION, "os.posix_spawn()"),
+    Sink("pty", "spawn", VulnType.COMMAND_EXECUTION, "pty.spawn()",
+         dangerous_param_index=0),
     Sink("subprocess", "call", VulnType.COMMAND_EXECUTION, "subprocess.call()"),     # 多个参数都可能危险
     Sink("subprocess", "run", VulnType.COMMAND_EXECUTION, "subprocess.run()"),
     Sink("subprocess", "Popen", VulnType.COMMAND_EXECUTION, "subprocess.Popen()"),
@@ -198,6 +208,8 @@ PYTHON_SINKS: list[Sink] = [
     # ============ XXE ============
     Sink("lxml.etree", "parse", VulnType.XXE, "lxml.etree.parse()",
          dangerous_param_index=0),
+    Sink("xmltodict", "parse", VulnType.XXE, "xmltodict.parse()",
+         dangerous_param_index=0),
     Sink("lxml.etree", "fromstring", VulnType.XXE, "lxml.etree.fromstring()",
          dangerous_param_index=0),
     Sink("xml.etree.ElementTree", "parse", VulnType.XXE, "ElementTree.parse()",
@@ -211,8 +223,6 @@ PYTHON_SINKS: list[Sink] = [
 
     # ============ 开放重定向 ============
     Sink("flask", "redirect", VulnType.OPEN_REDIRECT, "Flask redirect()",
-         dangerous_param_index=0),
-    Sink("django.shortcuts", "redirect", VulnType.OPEN_REDIRECT, "Django redirect()",
          dangerous_param_index=0),
     Sink("django.http", "HttpResponseRedirect", VulnType.OPEN_REDIRECT, "Django HttpResponseRedirect",
          dangerous_param_index=0),
@@ -232,6 +242,23 @@ PYTHON_SINKS: list[Sink] = [
          dangerous_param_index=0),
     Sink("markupsafe", "Markup", VulnType.XSS, "Markup() 绕过转义",
          dangerous_param_index=0),
+    Sink("flask", "Response", VulnType.XSS, "Flask Response 直接输出",
+         dangerous_param_index=0),
     Sink("django.http", "HttpResponse", VulnType.XSS, "Django HttpResponse 直接输出",
          dangerous_param_index=0),
+    Sink("django.http", "JsonResponse", VulnType.XSS, "Django JsonResponse 直接输出",
+         dangerous_param_index=0),
+
+    # ============ 文件操作（路径穿越 / 任意文件写） ============
+    Sink("os", "rename", VulnType.PATH_TRAVERSAL, "os.rename() 文件移动"),
+    Sink("os", "remove", VulnType.PATH_TRAVERSAL, "os.remove() 文件删除",
+         dangerous_param_index=0),
+    Sink("os", "unlink", VulnType.PATH_TRAVERSAL, "os.unlink() 文件删除",
+         dangerous_param_index=0),
+    Sink("os", "makedirs", VulnType.PATH_TRAVERSAL, "os.makedirs() 目录创建",
+         dangerous_param_index=0),
+    Sink("shutil", "move", VulnType.PATH_TRAVERSAL, "shutil.move() 文件移动"),
+    Sink("shutil", "copy", VulnType.PATH_TRAVERSAL, "shutil.copy() 文件复制"),
+    Sink("shutil", "copyfile", VulnType.PATH_TRAVERSAL, "shutil.copyfile() 文件复制"),
+    Sink("shutil", "copytree", VulnType.PATH_TRAVERSAL, "shutil.copytree() 目录复制"),
 ]
