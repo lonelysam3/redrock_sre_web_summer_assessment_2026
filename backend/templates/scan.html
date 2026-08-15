@@ -976,5 +976,26 @@
             onScroll();
         })();
     </script>
+    <!-- 统计卡片数字滚动动画 -->
+    <script>
+        (function () {
+            var els = document.querySelectorAll('.stat .num');
+            var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            els.forEach(function (el) {
+                var target = parseInt(el.textContent, 10);
+                if (isNaN(target) || reduced) return;
+                var dur = 900, t0 = null;
+                el.textContent = '0';
+                function tick(t) {
+                    if (t0 === null) t0 = t;
+                    var p = Math.min((t - t0) / dur, 1);
+                    var eased = 1 - Math.pow(1 - p, 3);
+                    el.textContent = Math.round(target * eased);
+                    if (p < 1) requestAnimationFrame(tick);
+                }
+                requestAnimationFrame(tick);
+            });
+        })();
+    </script>
 </body>
 </html>
