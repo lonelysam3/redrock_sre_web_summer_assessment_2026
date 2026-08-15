@@ -796,16 +796,12 @@ def _run_ai_analysis(app: Flask, scan_id: int):
                         else:
                             v.ai_attack_vector = str(atk) if atk else ""
 
-                        # 修复建议 + 代码
+                        # 修复建议（只存建议；ai_fix_code 专属"AI 修复"流程）
                         fix = result.get("fix_recommendation", {})
                         if isinstance(fix, dict):
                             v.ai_fix_suggestion = json_mod.dumps(fix, ensure_ascii=False)
-                            # 提取首要修复方案的代码
-                            primary = fix.get("primary", {})
-                            v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
                         else:
                             v.ai_fix_suggestion = str(fix) if fix else ""
-                            v.ai_fix_code = result.get("fix_code", "")
 
         db.session.commit()
 
@@ -928,11 +924,9 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
                     v.ai_owasp_category = r.get("owasp_category", "")
                     v.ai_root_cause = _json.dumps(r.get("root_cause", {}), ensure_ascii=False)
                     v.ai_attack_vector = _json.dumps(r.get("attack_analysis", {}), ensure_ascii=False)
+                    # 修复建议只存 ai_fix_suggestion；ai_fix_code 专属"AI 修复"流程
+                    # （分析阶段不写 ai_fix_code，避免被误认为已应用修复）
                     v.ai_fix_suggestion = _json.dumps(r.get("fix_recommendation", {}), ensure_ascii=False)
-                    fix = r.get("fix_recommendation", {})
-                    if isinstance(fix, dict):
-                        primary = fix.get("primary", {})
-                        v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
                     analyzed += 1
 
             db.session.commit()
@@ -1209,14 +1203,16 @@ def run_scan_in_thread(app, scan_id: int, project_path: str, language: str, auto
                         db.session.commit()
                         _sys.stderr.flush()
 
-                    # 阶段 2: Payload 构建 + 验证
+                    # 阶段 2: Payload 构建 + 验证（不生成修复；修复由 auto_fix 独立触发）
                     if auto_verify or auto_fix:
                         scan.status = "verifying"
                         db.session.commit()
                         _sys.stderr.write(f"[SCAN] starting AI verification of {n} vulns...\n")
                         _sys.stderr.flush()
                         try:
-                            verified, vt = _run_ai_verification_on_vulns(scan_id, project_path, ai_client, _sys.stderr)
+                            verified, vt = _run_ai_verification_on_vulns(
+                                scan_id, project_path, ai_client, _sys.stderr,
+                                do_fix=bool(auto_fix))
                             _sys.stderr.write(f"[SCAN] AI verification done: {verified}/{vt} confirmed\n")
                         except Exception:
                             traceback.print_exc(file=_sys.stderr)

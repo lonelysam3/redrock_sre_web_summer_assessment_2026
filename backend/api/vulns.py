@@ -172,12 +172,8 @@ def analyze_vuln(vuln_id: int):
             # 嵌套对象需要序列化为 JSON 字符串
             v.ai_root_cause = json.dumps(r.get("root_cause", {}), ensure_ascii=False)
             v.ai_attack_vector = json.dumps(r.get("attack_analysis", {}), ensure_ascii=False)
+            # 修复建议只存 ai_fix_suggestion；ai_fix_code 专属"AI 修复"流程
             v.ai_fix_suggestion = json.dumps(r.get("fix_recommendation", {}), ensure_ascii=False)
-            # fix_code 是字符串，直接存
-            fix = r.get("fix_recommendation", {})
-            if isinstance(fix, dict):
-                primary = fix.get("primary", {})
-                v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
         db.session.commit()
 
         # ---- 自动 Payload 构建 + 验证（不生成修复） ----
@@ -333,11 +329,8 @@ def analyze_all_vulns():
                     v.ai_owasp_category = r.get("owasp_category", "")
                     v.ai_root_cause = json.dumps(r.get("root_cause", {}), ensure_ascii=False)
                     v.ai_attack_vector = json.dumps(r.get("attack_analysis", {}), ensure_ascii=False)
+                    # 修复建议只存 ai_fix_suggestion；ai_fix_code 专属"AI 修复"流程
                     v.ai_fix_suggestion = json.dumps(r.get("fix_recommendation", {}), ensure_ascii=False)
-                    fix = r.get("fix_recommendation", {})
-                    if isinstance(fix, dict):
-                        primary = fix.get("primary", {})
-                        v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
                     analyzed += 1
             else:
                 failed += 1

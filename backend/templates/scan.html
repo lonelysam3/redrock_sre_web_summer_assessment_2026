@@ -407,24 +407,24 @@
                 <span style="display:flex;gap:16px;align-items:flex-start;font-size:0.82em;color:var(--subtext);margin-left:8px;">
                     <div>
                         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;color:var(--text);">
-                            <input type="checkbox" id="auto-ai-rescan" style="accent-color:var(--blue);">
+                            <input type="checkbox" id="auto-ai-rescan" checked style="accent-color:var(--blue);">
                             AI 分析
                         </label>
                         <p style="font-size:0.75em;margin:1px 0 0 18px;">深度分析漏洞</p>
                     </div>
                     <div>
                         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;color:var(--text);">
-                            <input type="checkbox" id="auto-verify-rescan" style="accent-color:var(--violet);">
+                            <input type="checkbox" id="auto-verify-rescan" checked style="accent-color:var(--violet);">
                             Payload 验证
                         </label>
-                        <p style="font-size:0.75em;margin:1px 0 0 18px;">验证漏洞真实性</p>
+                        <p style="font-size:0.75em;margin:1px 0 0 18px;">验证漏洞真实性（不修改代码）</p>
                     </div>
                     <div>
                         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;color:var(--text);">
                             <input type="checkbox" id="auto-fix-rescan" style="accent-color:var(--teal);">
                             AI 修复
                         </label>
-                        <p style="font-size:0.75em;margin:1px 0 0 18px;">生成修复代码</p>
+                        <p style="font-size:0.75em;margin:1px 0 0 18px;">应用修复代码（直接修改源文件，.bak 备份）</p>
                     </div>
                 </span>
             </div>
