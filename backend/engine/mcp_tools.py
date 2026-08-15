@@ -570,6 +570,28 @@ def parse_tool_calls(response: str) -> list[dict]:
     """从 AI 回复中解析工具调用请求"""
     calls = []
 
+    # 策略 0：Claude 风格 XML 工具调用（v4 模型偶尔用）
+    # <tool_calls><invoke name="x"><parameter name="k">v</parameter></invoke>...</tool_calls>
+    for m in re.finditer(
+            r'<(?:(?:\w+:)?invoke)\s+name="([^"]+)"[^>]*>([\s\S]*?)</(?:\w+:)?invoke>',
+            response):
+        name = m.group(1)
+        body = m.group(2)
+        args: dict = {}
+        for pm in re.finditer(
+                r'<(?:(?:\w+:)?parameter)\s+name="([^"]+)"[^>]*>([\s\S]*?)</(?:\w+:)?parameter>',
+                body):
+            raw = pm.group(2).strip()
+            val: object = raw
+            try:
+                val = json.loads(raw)
+            except Exception:
+                pass  # 纯文本参数，保留字符串
+            args[pm.group(1)] = val
+        calls.append(dict(name=name, arguments=args))
+    if calls:
+        return calls
+
     # 策略 1： ```json ... ``` 中的 tool_calls
     for m in re.finditer(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response):
         try:
