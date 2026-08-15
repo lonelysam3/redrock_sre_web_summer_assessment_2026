@@ -198,8 +198,10 @@ def upload_project():
 
     # ---- 3. 是否自动扫描 ----
     auto_scan = request.form.get("auto_scan", "true").lower() != "false"
-    # ---- 3b. 是否自动 AI 分析 ----
+    # ---- 3b. 是否自动 AI 分析 / Payload 验证 / 修复 ----
     auto_ai = request.form.get("auto_ai", "0") == "1"
+    auto_verify = request.form.get("auto_verify", "0") == "1"
+    auto_fix = request.form.get("auto_fix", "0") == "1"
 
     # ---- 3c. 版本/标准 ----
     php_version = (request.form.get("php_version", "") or "").strip() or None
@@ -272,7 +274,7 @@ def upload_project():
 
         thread = threading.Thread(
             target=_trigger_scan_background,
-            args=(app, scan.id, project_path, language, auto_ai),
+            args=(app, scan.id, project_path, language, auto_ai, auto_verify, auto_fix),
             daemon=True,
         )
         thread.start()
@@ -283,7 +285,10 @@ def upload_project():
     return jsonify(response_data), 201
 
 
-def _trigger_scan_background(app, scan_id: int, project_path: str, language: str, auto_ai: bool = False):
+def _trigger_scan_background(app, scan_id: int, project_path: str, language: str,
+                            auto_ai: bool = False, auto_verify: bool = False,
+                            auto_fix: bool = False):
     """后台线程：直接调用 app.run_scan_in_thread"""
     from app import run_scan_in_thread
-    run_scan_in_thread(app, scan_id, project_path, language, auto_ai=auto_ai)
+    run_scan_in_thread(app, scan_id, project_path, language,
+                       auto_ai=auto_ai, auto_verify=auto_verify, auto_fix=auto_fix)
