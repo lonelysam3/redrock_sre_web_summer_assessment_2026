@@ -31,13 +31,12 @@ from ai.settings_bridge import build_ai_chat_core
 # 验证 + 自动修复 Prompt
 # ============================================================================
 
-VERIFY_AND_FIX_SYSTEM_PROMPT = """你是一名资深渗透测试专家 + 安全修复工程师。
+VERIFY_SYSTEM_PROMPT = """你是一名资深渗透测试专家。
 
-## 你的任务
+## 你的任务（只做验证，不修改任何代码）
 
 1. **验证漏洞** — 使用工具深入探索源码，判断漏洞是否真实可利用
 2. **生成 Payload** — 如果确认漏洞，给出精准的攻击载荷
-3. **自动修复** — 使用 apply_code_fix 工具直接将修复代码写入源文件
 
 ## 工作流程
 
@@ -46,18 +45,12 @@ VERIFY_AND_FIX_SYSTEM_PROMPT = """你是一名资深渗透测试专家 + 安全�
 3. 调用 trace_variable_flow 追踪关键变量的传播路径
 4. 调用 read_file_region 读取关键代码上下文
 5. 调用 search_project 跨文件搜索相关配置（如 WAF、过滤器）
-6. 综合分析后：
-   - 调用 apply_code_fix 应用修复代码
-   - 输出最终 JSON 判定结果
+6. 综合分析后输出最终 JSON 判定结果
 
-## apply_code_fix 用法
+## 重要约束
 
-修复代码后立即调用 apply_code_fix：
-- file_path: 要修复的文件路径
-- start_line/end_line: 需要替换的行范围
-- new_code: 修复后的完整代码（保持原有缩进）
-
-示例：将第 45-47 行的不安全 SQL 拼接替换为参数化查询
+- **严禁修改任何源文件**（没有修复工具可用，也不要在结果里建议改动文件）
+- 只输出验证结论、Payload 和证据
 
 ## 判定标准
 
@@ -65,20 +58,12 @@ VERIFY_AND_FIX_SYSTEM_PROMPT = """你是一名资深渗透测试专家 + 安全�
 - **potential**: 存在风险但缺少关键证据（如不确定 WAF 配置）
 - **false_positive**: 代码有有效安全控制（参数化查询/白名单/强类型校验）
 
-## 修复代码要求
-
-- 使用 apply_code_fix 直接修改源文件
-- 保持原有代码风格和缩进
-- 使用最佳安全实践（参数化查询、输入校验、输出编码等）
-- 如果是 PHP，考虑目标版本的特性
-- 修复后输出 JSON 结果，fix_code 字段包含你应用的完整修复代码
-
 ## 重要
 
 不要重复基础分析！如果漏洞已有 AI 分析结果（在上下文提供），直接基于它验证，
-不要再分析漏洞成因。专注于验证和修复，并实际应用修复。"""
+不要再分析漏洞成因。专注于验证与 Payload 构建。"""
 
-VERIFY_AND_FIX_TEMPLATE = """## 漏洞验证 + 修复任务
+VERIFY_TEMPLATE = """## 漏洞验证任务（不修改代码）
 
 ### 基本信息
 - **类型**: {vuln_type_label}（{vuln_type}）
@@ -116,7 +101,7 @@ VERIFY_AND_FIX_TEMPLATE = """## 漏洞验证 + 修复任务
 
 ---
 
-请使用工具探索代码，验证漏洞是否真实。确认后先调用 apply_code_fix 应用修复，再输出 JSON：
+请使用工具探索代码，验证漏洞是否真实，然后输出 JSON：
 
 ```json
 {{
@@ -124,9 +109,74 @@ VERIFY_AND_FIX_TEMPLATE = """## 漏洞验证 + 修复任务
     "confidence": 0.0-1.0,
     "exploit_payload": "最有效的攻击 Payload",
     "payload_effect": "Payload 的预期效果",
-    "evidence": "验证证据（3-5 句话，引用具体的行号和代码）",
+    "evidence": "验证证据（3-5 句话，引用具体的行号和代码）"
+}}
+```
+"""
+
+FIX_SYSTEM_PROMPT = """你是一名资深安全修复工程师。
+
+## 你的任务（只做修复）
+
+使用 apply_code_fix 工具将修复代码写入源文件。
+
+## apply_code_fix 用法
+
+- file_path: 要修复的文件路径
+- start_line/end_line: 需要替换的行范围（1-based，含）
+- new_code: 修复后的完整代码（保持原有缩进）
+
+示例：将第 45-47 行的不安全 SQL 拼接替换为参数化查询
+
+## 修复代码要求
+
+- 保持原有代码风格和缩进
+- 使用最佳安全实践（参数化查询、输入校验、输出编码等）
+- 如果是 PHP，考虑目标版本的特性
+- 修复后输出 JSON 结果，fix_code 字段包含你应用的完整修复代码
+"""
+
+FIX_TEMPLATE = """## 漏洞修复任务
+
+### 基本信息
+- **类型**: {vuln_type_label}（{vuln_type}）
+- **文件**: {file_path}
+- **语言**: {language}
+- **行号**: {line_number}
+{php_version_context}
+
+### 源码入口（Source）
+```
+{source_code}
+```
+
+### 危险函数（Sink）
+```
+{sink_code}
+```
+
+### 数据流路径
+```
+{data_flow}
+```
+
+### 漏洞类型说明
+{description}
+
+### 额外代码上下文
+```
+{context_code}
+```
+
+---
+
+请使用 apply_code_fix 工具应用修复，然后输出 JSON：
+
+```json
+{{
     "fix_code": "你通过 apply_code_fix 应用的完整修复代码",
-    "fix_description": "修复说明（为什么这样修复，还有其他备选方案吗）"
+    "fix_description": "修复说明（为什么这样修复，还有其他备选方案吗）",
+    "fixed_file": "已修复的文件路径"
 }}
 ```
 """
@@ -370,17 +420,17 @@ class AIClient:
     # MCP 工具驱动验证 + 自动修复
     # ================================================================
 
-    def verify_and_fix_with_tools(
+    def verify_with_tools(
         self, vuln: dict, context_code: str = "",
         php_version: str = "", project_path: str = "",
         max_tool_rounds: int = 4,
     ) -> dict | None:
         """
-        使用 MCP 工具自主验证漏洞可利用性并生成修复代码。
+        使用 MCP 工具自主验证漏洞可利用性（只验证，不修改代码）。
 
         AI 会调用 search_dangerous_calls、trace_variable_flow、
         read_file_region 等工具深入探索源码，确认漏洞是否真实，
-        并给出可用的修复代码。
+        并构建攻击 Payload。修复代码由 fix_with_tools 单独负责。
 
         返回:
             {
@@ -388,17 +438,17 @@ class AIClient:
                 "confidence": 0.0-1.0,
                 "exploit_payload": "...",
                 "payload_effect": "...",
-                "evidence": "验证证据",
-                "fix_code": "修复代码",
-                "fix_description": "修复说明"
+                "evidence": "验证证据"
             }
         """
         from engine.mcp_tools import (
             MCPToolExecutor, build_tool_system_prompt, parse_tool_calls
         )
 
-        tool_executor = MCPToolExecutor(project_path) if project_path else None
-        tool_prompt = build_tool_system_prompt() if tool_executor else ""
+        # allow_fix=False：验证阶段不允许 apply_code_fix（双重保险：
+        # 系统提示不提供修复工具，执行器也会拒绝）
+        tool_executor = MCPToolExecutor(project_path, allow_fix=False) if project_path else None
+        tool_prompt = build_tool_system_prompt(include_fix_tool=False) if tool_executor else ""
 
         vuln_type = vuln.get("vuln_type", "")
 
@@ -415,7 +465,7 @@ class AIClient:
 
         from ai.prompts import VULN_TYPE_LABELS, VULN_TYPE_DESCRIPTIONS
 
-        initial_prompt = VERIFY_AND_FIX_TEMPLATE.format(
+        initial_prompt = VERIFY_TEMPLATE.format(
             vuln_type_label=VULN_TYPE_LABELS.get(vuln_type, vuln_type),
             vuln_type=vuln_type,
             file_path=vuln.get("file_path", ""),
@@ -431,12 +481,80 @@ class AIClient:
             context_code=context_code,
         )
 
+        return self._run_tool_loop(
+            initial_prompt, VERIFY_SYSTEM_PROMPT, tool_prompt,
+            tool_executor, max_tool_rounds, "VERIFY",
+        )
+
+    def fix_with_tools(
+        self, vuln: dict, context_code: str = "",
+        php_version: str = "", project_path: str = "",
+        max_tool_rounds: int = 4,
+    ) -> dict | None:
+        """
+        使用 MCP 工具（apply_code_fix）为已确认的漏洞生成并应用修复。
+
+        只做修复，不做漏洞验证；调用前应先经过 verify_with_tools 确认。
+
+        返回:
+            {
+                "fix_code": "应用的修复代码",
+                "fix_description": "修复说明",
+                "fixed_file": "已修复的文件路径"
+            }
+        """
+        from engine.mcp_tools import (
+            MCPToolExecutor, build_tool_system_prompt, parse_tool_calls
+        )
+
+        tool_executor = MCPToolExecutor(project_path, allow_fix=True) if project_path else None
+        tool_prompt = build_tool_system_prompt(include_fix_tool=True) if tool_executor else ""
+
+        vuln_type = vuln.get("vuln_type", "")
+
+        php_ctx = ""
+        if php_version:
+            from engine.rule_engine import RuleEngine
+            eng = RuleEngine(php_version)
+            ctx_obj = eng.get_wide_byte_context()
+            php_ctx = (
+                f"- PHP {php_version}"
+                f"（DSN charset: {'可信' if ctx_obj['dsn_charset_trusted'] else '不可信'}）"
+            )
+
+        from ai.prompts import VULN_TYPE_LABELS, VULN_TYPE_DESCRIPTIONS
+
+        initial_prompt = FIX_TEMPLATE.format(
+            vuln_type_label=VULN_TYPE_LABELS.get(vuln_type, vuln_type),
+            vuln_type=vuln_type,
+            file_path=vuln.get("file_path", ""),
+            language=vuln.get("language", ""),
+            line_number=vuln.get("line_number", 0),
+            source_code=vuln.get("source_code", ""),
+            sink_code=vuln.get("sink_code", ""),
+            data_flow=vuln.get("data_flow", ""),
+            description=VULN_TYPE_DESCRIPTIONS.get(vuln_type, ""),
+            php_version_context=php_ctx,
+            context_code=context_code,
+        )
+
+        return self._run_tool_loop(
+            initial_prompt, FIX_SYSTEM_PROMPT, tool_prompt,
+            tool_executor, max_tool_rounds, "FIX",
+        )
+
+    def _run_tool_loop(self, initial_prompt: str, system_prompt: str,
+                       tool_prompt: str, tool_executor, max_tool_rounds: int,
+                       tag: str) -> dict | None:
+        """MCP 工具多轮对话循环（验证与修复共用）。"""
+        from engine.mcp_tools import parse_tool_calls
+
         conversation_history = initial_prompt
         final_result = None
         last_response = None
 
         for round_num in range(max_tool_rounds):
-            system_with_tools = VERIFY_AND_FIX_SYSTEM_PROMPT
+            system_with_tools = system_prompt
             has_tools = bool(tool_executor)
             if has_tools:
                 system_with_tools += "\n\n" + tool_prompt
@@ -445,18 +563,18 @@ class AIClient:
                                        system_prompt=system_with_tools,
                                        max_tokens=8192)
             if not response:
-                print(f"[VFIX] 第 {round_num+1} 轮 AI 无响应")
+                print(f"[{tag}] 第 {round_num+1} 轮 AI 无响应")
                 break
             last_response = response
 
             # 尝试解析工具调用
             if tool_executor:
                 tool_calls = parse_tool_calls(response)
-                print(f"[VFIX] 第 {round_num+1} 轮: {len(tool_calls)} 个工具调用")
+                print(f"[{tag}] 第 {round_num+1} 轮: {len(tool_calls)} 个工具调用")
                 if tool_calls:
                     tool_results = []
                     for tc in tool_calls:
-                        print(f"[VFIX] 执行: {tc['name']}({tc.get('arguments', {})})")
+                        print(f"[{tag}] 执行: {tc['name']}({tc.get('arguments', {})})")
                         result = tool_executor.execute(
                             tc["name"], tc.get("arguments", {})
                         )
@@ -478,7 +596,7 @@ class AIClient:
             # 无工具调用，解析最终 JSON
             final_result = self._parse_json(response)
             if final_result:
-                print(f"[VFIX] 第 {round_num+1} 轮: 解析到最终结果")
+                print(f"[{tag}] 第 {round_num+1} 轮: 解析到最终结果")
                 break
 
         if not final_result and last_response:

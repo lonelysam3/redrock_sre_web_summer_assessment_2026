@@ -674,7 +674,7 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
                     analyzed, total = _run_ai_analysis_on_vulns(scan_id, project_path, client, sys.stderr)
                     s = db.session.get(ScanTask, scan_id)
 
-                    # 阶段 2: Payload 构建 + 验证
+                    # 阶段 2: Payload 构建 + 验证（不生成修复）
                     if auto_verify or auto_fix:
                         if s:
                             s.status = "verifying"
@@ -682,8 +682,11 @@ def _run_scan_background(app: Flask, scan_id: int, project_path: str, language: 
                         print(f"[SCAN] starting AI verification of {total} vulns...")
                         try:
                             from engine.ai_verifier import AIVerifier, VerificationResult
-                            verified, vt = _run_ai_verification_on_vulns(scan_id, project_path, client, sys.stderr)
-                            print(f"[SCAN] AI verification done: {verified}/{vt} confirmed")
+                            verified, vt = _run_ai_verification_on_vulns(
+                                scan_id, project_path, client, sys.stderr,
+                                do_fix=bool(auto_fix))
+                            print(f"[SCAN] AI verification done: {verified}/{vt} confirmed"
+                                  f"{' (fix applied)' if auto_fix else ''}")
                         except Exception as ve:
                             import traceback
                             print(f"[ERROR] AI verification failed: {ve}")
@@ -944,16 +947,20 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
     return analyzed, len(vulns)
 
 
-def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log):
+def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log,
+                                  do_fix: bool = False):
     """
-    AI 自动 MCP 工具驱动验证 + 自动修复。
+    AI 自动 MCP 工具驱动验证；do_fix=True 时额外执行独立的修复流程。
 
-    对已通过 AI 深度分析的漏洞，逐一：
-      1. AI 使用 MCP 工具（search_dangerous_calls/trace_variable_flow 等）
-         自主探索源码，验证漏洞真实性
-      2. 确认漏洞后构建攻击 Payload
-      3. 生成可用的修复代码
-      4. 写入 DB：ai_payload / ai_payload_result / ai_fix_code / status
+    验证与修复完全分离：
+      1. 验证：AI 使用 MCP 工具（search_dangerous_calls/trace_variable_flow 等）
+         自主探索源码，判断漏洞真实性 + 构建 Payload（不修改源文件）
+      2. 修复（仅 do_fix=True）：对 confirmed/potential 的漏洞单独调用
+         apply_code_fix 工具应用修复代码
+
+    写入 DB：
+      - 验证：ai_payload / ai_payload_result / ai_payload_evidence / status
+      - 修复：ai_fix_code（仅 do_fix=True）
 
     结果：
       - status='confirmed'  → AI 确认漏洞
@@ -1026,14 +1033,14 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log):
         }
         vuln_dicts.append(vd)
 
-    # MCP 工具驱动验证 + 修复（一步完成）
+    # MCP 工具驱动验证（只验证 + Payload，不生成修复）
     verifier = AIVerifier(client)
     reports = verifier.verify(vuln_dicts, [], source_code_map,
                                project_path=project_path, php_version=php_version)
     log.write(f"[VERIFY] MCP verification reports: {len(reports)}\n")
     log.flush()
 
-    # 写入 DB
+    # 写入 DB（验证结果）
     verified = 0
     for report in reports:
         idx = report.vuln_id
@@ -1056,13 +1063,35 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log):
                 v.status = "potential"
                 v.ai_payload_result = "uncertain"
 
-            # 保存 AI 生成的修复代码
-            if report.fix_code:
-                v.ai_fix_code = report.fix_code
-
     db.session.commit()
     log.write(f"[VERIFY] done: {verified} confirmed, {len(vulns) - verified} uncertain/potential\n")
     log.flush()
+
+    # ---- 独立修复流程（仅 do_fix=True，只修 confirmed/potential） ----
+    fixed = 0
+    if do_fix:
+        to_fix = [
+            (i, vd) for i, vd in enumerate(vuln_dicts)
+            if vulns[i].status in ("confirmed", "potential")
+        ]
+        if to_fix:
+            log.write(f"[FIX] starting fix flow for {len(to_fix)} vulns...\n")
+            log.flush()
+            idxs = [i for i, _ in to_fix]
+            fix_results = verifier.generate_fixes(
+                [vd for _, vd in to_fix], source_code_map,
+                project_path=project_path, php_version=php_version,
+            )
+            for local_idx, fix_code, fix_desc in fix_results:
+                if local_idx < len(idxs):
+                    v = vulns[idxs[local_idx]]
+                    if fix_code:
+                        v.ai_fix_code = fix_code
+                        fixed += 1
+            db.session.commit()
+            log.write(f"[FIX] done: {fixed} vulns fixed\n")
+            log.flush()
+
     return verified, len(vulns)
 
 

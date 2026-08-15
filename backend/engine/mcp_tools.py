@@ -200,8 +200,11 @@ PHP_SOURCE_PATTERNS = {
 class MCPToolExecutor:
     """MCP 工具执行器"""
 
-    def __init__(self, project_path: str, source_code_map: dict[str, str] | None = None):
+    def __init__(self, project_path: str,
+                 source_code_map: dict[str, str] | None = None,
+                 allow_fix: bool = False):
         self.project_path = project_path
+        self._allow_fix = allow_fix  # 只有修复流程才允许 apply_code_fix
         self._source_map = source_code_map or {}
         if not self._source_map:
             self._build_source_map()
@@ -457,6 +460,13 @@ class MCPToolExecutor:
 
     def execute(self, tool_name: str, arguments: dict) -> str:
         """根据工具名和参数执行对应工具，返回结果字符串"""
+        # 双重保险：验证流程不允许修改源文件，即使模型执意调用也拒绝
+        if tool_name == "apply_code_fix" and not self._allow_fix:
+            return json.dumps({
+                "success": False,
+                "error": "当前流程（验证）不允许修改源文件。修复请走修复流程。"
+            }, ensure_ascii=False)
+
         tool_map = {
             "search_dangerous_calls": lambda: self.search_dangerous_calls(
                 arguments.get("file_path", "")
@@ -502,13 +512,23 @@ class MCPToolExecutor:
 # Prompt 生成
 # ========================================================================
 
-def build_tool_system_prompt() -> str:
-    """生成描述可用工具的 System Prompt 片段"""
+def build_tool_system_prompt(include_fix_tool: bool = False) -> str:
+    """生成描述可用工具的 System Prompt 片段。
+
+    include_fix_tool=False（默认）：不暴露 apply_code_fix —— 验证流程专用，
+    保证"payload 验证"与"AI 修复"分离。
+    """
+    tools = [t for t in MCP_TOOLS
+             if include_fix_tool or t.name != "apply_code_fix"]
 
     tool_list = "\n".join(
         f"- **{t.name}**: {t.description}"
-        for t in MCP_TOOLS
+        for t in tools
     )
+
+    fix_hint = ("- 确认漏洞后，用 apply_code_fix 直接修改源文件应用修复\n"
+                if include_fix_tool
+                else "- 只做验证与分析，不要尝试修改任何源文件\n")
 
     return """## 可用工具
 
@@ -542,8 +562,8 @@ search_dangerous_calls(file_path="register.php")
 - 用 read_file_region 读取关键代码上下文
 - 用 search_project(pattern="exec|system") 跨文件搜索危险函数
 - 工具返回的 file_path 可用于后续 read_file_region
-- 确认漏洞后，用 apply_code_fix 直接修改源文件应用修复
-- 分析完成后输出最终 JSON，不要再用 ```json 包裹""".format(tool_list=tool_list)
+{fix_hint}- 分析完成后输出最终 JSON，不要再用 ```json 包裹""".format(
+        tool_list=tool_list, fix_hint=fix_hint)
 
 
 def parse_tool_calls(response: str) -> list[dict]:

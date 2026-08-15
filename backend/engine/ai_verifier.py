@@ -173,7 +173,7 @@ class AIVerifier:
     def _ai_verify_with_tools(self, vuln: dict, source_code_map: dict[str, str],
                                vuln_index: int, project_path: str = "",
                                php_version: str = "") -> VerificationReport:
-        """使用 MCP 工具进行深度验证 + 修复"""
+        """使用 MCP 工具进行深度验证（只验证 + 构建 Payload，不生成修复）。"""
         file_path = vuln.get("file_path", "")
 
         # 构建上下文
@@ -182,7 +182,7 @@ class AIVerifier:
             ctx = source_code_map[file_path][:6000]
 
         try:
-            result = self.ai_client.verify_and_fix_with_tools(
+            result = self.ai_client.verify_with_tools(
                 vuln,
                 context_code=ctx,
                 php_version=php_version,
@@ -207,14 +207,41 @@ class AIVerifier:
                     verified_payload=result.get("exploit_payload", ""),
                     payload_effect=result.get("payload_effect", ""),
                     evidence=result.get("evidence", ""),
-                    recommendation=result.get("fix_description", ""),
-                    fix_code=result.get("fix_code", ""),
-                    fix_description=result.get("fix_description", ""),
                 )
         except Exception as e:
             print(f"[VERIFIER] MCP 验证异常: {e}")
 
         return self._heuristic_verify(vuln, vuln_index)
+
+    def generate_fixes(
+        self, vulns: list[dict], source_code_map: dict[str, str],
+        project_path: str = "", php_version: str = "",
+    ) -> list[tuple[int, str, str]]:
+        """
+        独立的修复流程：对已确认/潜在漏洞逐一生成并应用修复代码。
+
+        与验证完全分离：只有显式请求修复时才调用（auto_fix / 手动修复按钮）。
+
+        返回:
+            list[(vuln_index, fix_code, fix_description)]
+        """
+        results = []
+        for i, v in enumerate(vulns):
+            file_path = v.get("file_path", "")
+            ctx = ""
+            if file_path and file_path in source_code_map:
+                ctx = source_code_map[file_path][:6000]
+            try:
+                r = self.ai_client.fix_with_tools(
+                    v, context_code=ctx, php_version=php_version,
+                    project_path=project_path,
+                )
+                if r and isinstance(r, dict):
+                    results.append((i, r.get("fix_code", ""),
+                                    r.get("fix_description", "")))
+            except Exception as e:
+                print(f"[FIXER] 修复异常: {e}")
+        return results
 
     def _heuristic_verify(self, vuln: dict, vuln_index: int) -> VerificationReport:
         """

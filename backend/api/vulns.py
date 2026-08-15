@@ -180,13 +180,81 @@ def analyze_vuln(vuln_id: int):
                 v.ai_fix_code = primary.get("code", "") if isinstance(primary, dict) else ""
         db.session.commit()
 
-        # ---- 自动 Payload 构建 + 验证 ----
+        # ---- 自动 Payload 构建 + 验证（不生成修复） ----
         try:
             _verify_single_vuln(v)
         except Exception:
             pass
 
     return jsonify(_serialize(v))
+
+
+@vulns_bp.route("/<int:vuln_id>/fix", methods=["POST"])
+def fix_vuln(vuln_id: int):
+    """
+    手动触发单个漏洞的 AI 修复（独立于验证流程）。
+
+    只有显式调用本接口（或扫描时勾选"自动修复"）才会生成并应用修复代码，
+    Payload 验证流程不再附带修改源代码。
+    """
+    v = db.session.get(Vulnerability, vuln_id)
+    if not v:
+        return jsonify({"error": "不存在"}), 404
+
+    from ai.client import get_ai_client
+    from engine.ai_verifier import AIVerifier
+
+    client = get_ai_client()
+    if not client.is_configured():
+        return jsonify({
+            "error": "AI 未配置",
+            "detail": "请先在设置页面配置 API Key、Base URL 和模型"
+        }), 400
+
+    # 项目路径与 PHP 版本
+    project_path = ""
+    php_version = ""
+    try:
+        if v.scan_task and v.scan_task.project:
+            php_version = v.scan_task.project.php_version or ""
+            if v.file_path:
+                import os as _os
+                project_path = _os.path.dirname(_os.path.dirname(v.file_path))
+    except Exception:
+        pass
+
+    source_code_map = {}
+    if v.file_path:
+        try:
+            with open(v.file_path, encoding='utf-8', errors='ignore') as f:
+                source_code_map[v.file_path] = f.read()
+        except Exception:
+            source_code_map[v.file_path] = v.source_code or ""
+
+    vuln_dict = {
+        "file_path": v.file_path,
+        "line_number": v.line_number,
+        "vuln_type": v.vuln_type,
+        "severity": v.severity,
+        "language": v.language,
+        "source_code": v.source_code or "",
+        "sink_code": v.sink_code or "",
+        "data_flow": v.data_flow or "",
+        "pipeline_stage": v.pipeline_stage or "",
+    }
+
+    verifier = AIVerifier(client)
+    results = verifier.generate_fixes([vuln_dict], source_code_map,
+                                      project_path=project_path,
+                                      php_version=php_version)
+    if results:
+        _, fix_code, _ = results[0]
+        if fix_code:
+            v.ai_fix_code = fix_code
+            db.session.commit()
+            return jsonify({"ok": True, "vuln": _serialize(v)})
+
+    return jsonify({"ok": False, "error": "AI 未返回修复代码"}), 502
 
 
 @vulns_bp.route("/analyze-all", methods=["POST"])
@@ -353,8 +421,6 @@ def analyze_all_vulns():
                     else:
                         av.status = "potential"
                         av.ai_payload_result = "uncertain"
-                    if report.fix_code:
-                        av.ai_fix_code = report.fix_code
             db.session.commit()
     except Exception as e:
         print(f"[VERIFY] 自动验证失败: {e}")
@@ -410,7 +476,7 @@ def _serialize(v: Vulnerability) -> dict:
 
 def _verify_single_vuln(v: Vulnerability):
     """
-    对单个已 AI 分析的漏洞进行 MCP 工具驱动验证 + 修复。
+    对单个已 AI 分析的漏洞进行 MCP 工具驱动验证（只验证 + Payload，不生成修复）。
     用于手动分析接口的自动验证。
     """
     from engine.ai_verifier import AIVerifier, VerificationResult
@@ -475,6 +541,4 @@ def _verify_single_vuln(v: Vulnerability):
         else:
             v.status = "potential"
             v.ai_payload_result = "uncertain"
-        if report.fix_code:
-            v.ai_fix_code = report.fix_code
         db.session.commit()
