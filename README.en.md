@@ -2,159 +2,213 @@
 
 [中文文档](README.md) | **English**
 
-A source code security audit engine supporting **Python / C / C++ / PHP**, covering SQL injection, command execution, SSRF, insecure deserialization, open redirect, XXE, SSTI, hardcoded credentials and more. Built-in version-aware rule engine and AI deep analysis.
+A source-code security audit platform: upload a project → static scan → AI deep analysis → **sandbox-based dynamic attack verification** → AI auto-fix, all visualized in a web UI.
+
+Supports **Python / PHP / C / C++**, covering SQL injection, command execution, SSRF, insecure deserialization, XXE, SSTI, XSS (including template XSS), path traversal, ZIP Slip, open redirect, hardcoded credentials and more. Built on a version-aware rule engine, a project-wide interprocedural taint analysis engine, and an AI verification system that can **actually attack the target application inside a sandbox** using MCP tools.
 
 ## Features
 
-- Upload source archives (zip / tar.gz), auto-extract and scan
-- Four-stage layered pipeline: taint tracking → data-flow enrichment → AST filtering/supplement → call-graph supplement
-- Python / C / C++ version and standard selection, PHP version-aware rules
-- AI deep analysis: root cause, attack methods, fix recommendations
-- AI payload verification: automatically build attack vectors and verify exploitability
-- Modern minimal frontend: aurora gradient background, bubble/grid decorations, shrinking glass header on scroll, self-hosted HarmonyOS Sans SC font
-- Dark / light theme, follows system preference
+- **Project upload**: upload source archives (zip/tar.gz), auto-extract and scan by language
+- **Static scan engine**: project-wide interprocedural taint analysis (cross-file/cross-function data flow) + data-flow enrichment + AST pattern analysis + call-graph supplement + template XSS analysis + ZIP Slip detection
+- **AI deep analysis**: every vulnerability gets root cause, attack methods and fix recommendations (the AI explores the source with MCP tools)
+- **AI payload verification**: the AI builds attack vectors; for web-exploitable vulns the platform **launches the target app in a local sandbox** and the AI sends real HTTP attack requests, comparing responses to judge whether the vulnerability is real
+- **AI auto-fix**: the AI generates fixes and applies them directly to the source (automatic `.bak` backup before editing), either auto-triggered per scan or manually per finding
+- **Version-aware rule engine**: PHP/Python/C/C++ rules activate and re-weight by target version
+- **Web UI**: projects → project detail → scan results, three-level pages; severity/verdict sorting and filtering, data-flow display, dark/light themes (HarmonyOS Sans font, glassmorphism/aurora effects)
 
-## Four-Stage Pipeline Architecture
+## Workflow
+
+### 1. Overall Flow
 
 ```
-Source files
+User uploads source archive (zip/tar.gz)
+        │
+        ▼
+┌──────────────────┐     ┌───────────────────────────────────┐
+│ Project created   │     │ New scan (optional checkboxes)     │
+│ extracted/        │ ──► │ ☑ AI analysis  ☑ Payload verify    │
+│ language/version  │     │ ☑ Auto fix                        │
+└──────────────────┘     └──────────────┬────────────────────┘
+                                        │ async background thread
+                                        ▼
+                        ┌───────────────────────────────┐
+                        │ Static scan pipeline           │
+                        │ see "Engine Pipeline" below    │
+                        └──────────────┬────────────────┘
+                                       │ findings stored (CWE/severity/data flow)
+                                       ▼
+                        ┌───────────────────────────────┐
+                        │ AI deep analysis (per vuln)    │
+                        │ MCP tool exploration → cause/  │
+                        │ attack/fix                     │
+                        └──────────────┬────────────────┘
+                                       ▼
+                        ┌───────────────────────────────┐
+                        │ Payload verification (optional)│
+                        │ sandbox real attack →          │
+                        │ confirmed/potential/false_positive│
+                        └──────────────┬────────────────┘
+                                       ▼
+                        ┌───────────────────────────────┐
+                        │ AI fix (optional/manual)       │
+                        │ apply_code_fix + .bak backup   │
+                        └──────────────┬────────────────┘
+                                       ▼
+                             Scan results: browse/filter/sort
+```
+
+### 2. Engine Pipeline
+
+```
+Source files (Python AST / PHP·C·C++ tree-sitter parsing)
   │
   ▼
-┌─────────────────────────────────┐
-│ Stage 1: Taint Tracking (truth) │  ← AST/CST parsing + BFS
-│ • Source→Sink variable flows    │     propagation-path search
-│ • Local type inference          │
-│   (cursor/connection objects)   │
-│ • Subscript/attribute sources   │
-│   + dict-access propagation     │
-│ • Sanitizer recognition         │
-│ • Intra-file full data flow     │
-└──────────────┬──────────────────┘
-               │ vulns (baseline)
+┌─────────────────────────────────────┐
+│ Stage 1: Taint Tracking (ground truth)│
+│ • Single project-wide taint graph,    │
+│   cross-file / cross-function         │
+│ • Scope namespacing (module,function) │
+│ • Return propagation + call-site      │
+│   linking (arg→param, callee #ret→    │
+│   caller variable)                    │
+│ • Module attribute links (import db;  │
+│   db.c)                               │
+│ • Local type inference (cursor/conn)  │
+│ • Sanitizer recognition (int/escape)  │
+│ • Per-source BFS + spread visited-set │
+└──────────────┬──────────────────────┘
                ▼
-┌─────────────────────────────────┐
-│ Stage 2: Data Flow (enrich)     │  ← deep analysis of Stage 1 results
-│ • Protection level (none/       │
-│   partial/strong/bypassable)    │
-│ • Exploit difficulty rating     │
-│ • Data transformation history   │
-└──────────────┬──────────────────┘
-               │ vulns (enriched)
+┌─────────────────────────────────────┐
+│ Stage 2: Data-Flow Enrichment         │
+│ • Protection level (none/partial/     │
+│   strong/bypassable)                  │
+│ • Exploit difficulty (easy~unlikely)  │
+│ • Data transformation history         │
+└──────────────┬──────────────────────┘
                ▼
-┌─────────────────────────────────┐
-│ Stage 3: AST Patterns (filter+  │  ← semantic pattern matching
-│  supplement)                    │
-│ • Parameterized query detection │
-│   → downgrade SQL false positives
-│ • Allowlist detection →         │
-│   downgrade false positives     │
-│ • Structural supplements        │
-│   (deserialization chains,      │
-│    hardcoded credentials,       │
-│    debug mode, dangerous combos)│
-└──────────────┬──────────────────┘
-               │ vulns (filtered + supplemented)
+┌─────────────────────────────────────┐
+│ Stage 3: AST Patterns (filter+add)    │
+│ • Parameterized queries → downgrade   │
+│   SQL false positives                │
+│ • Allowlist detection → downgrade     │
+│ • Supplements: deserialization chains/│
+│   hardcoded credentials/debug mode/   │
+│   dangerous combos                    │
+│ 3b. ZIP Slip detection (CWE-22 var.)  │
+│ 3c. Template XSS (|safe / autoescape  │
+│     off / <script> + view→template    │
+│     variable linking)                 │
+└──────────────┬──────────────────────┘
                ▼
-┌─────────────────────────────────┐
-│ Stage 4: Call Graph (supplement)│  ← cross-file call chains
-│ • Cross-function call tracing   │
-│ • Recover inter-file findings   │
-│   missed by intra-file analysis │
-└──────────────┬──────────────────┘
+┌─────────────────────────────────────┐
+│ Stage 4: Call-Graph Supplement        │
+│ (cross-file call chains)             │
+└──────────────┬──────────────────────┘
                │
                ▼
-          Final vuln list
+   dedup → CWE annotation → persist
 ```
 
-### Architecture Principles
+**Architecture principles**: Stage 1 is ground truth; Stages 2/3/4 never scan independently (preventing re-introduction of filtered false positives by looser heuristics); enrichment in Stage 2, filtering in Stage 3, supplementation in Stage 4.
 
-- **Stage 1 is ground truth** — all later stages build on Stage 1 results
-- **Stages 2/3/4 never scan independently** — this prevents false positives already filtered by Stage 1 from being re-introduced by looser heuristics
-- **Clear separation of duties** — enrichment in Stage 2, filtering in Stage 3, supplementation in Stage 4
+### 3. AI Deep Analysis
 
-### Supported Vulnerability Types
+Each vulnerability (or "analyze all") invokes the AI, which explores the source autonomously with MCP tools and returns a JSON verdict:
 
-| Vulnerability | Severity | Python | PHP | C/C++ |
-|--------------|----------|--------|-----|-------|
-| Command execution / code injection | Critical | ✅ | ✅ | ✅ |
-| SQL injection | High | ✅ | ✅ | ✅ |
-| Insecure deserialization | High | ✅ | ✅ | — |
-| SSRF | High | ✅ | ✅ | — |
-| XXE | High | ✅ | — | — |
-| Path traversal / arbitrary file read | Medium | ✅ | ✅ | ✅ |
-| Open redirect | Medium | ✅ | ✅ | — |
-| SSTI (server-side template injection) | Critical | ✅ | — | — |
-| XSS | Low | ✅ | ✅ | — |
-| File upload | High | — | ✅ | — |
-| Hardcoded credentials | High | ✅ | — | — |
-| Debug mode enabled | Low | ✅ | — | — |
+| MCP tool | Purpose |
+|---|---|
+| `search_dangerous_calls` | find dangerous function calls in a file |
+| `search_user_inputs` | locate user-input entry points |
+| `trace_variable_flow` | trace a variable's propagation path |
+| `read_file_region` | read a line range of a file |
+| `search_project` | cross-file regex search |
+| `list_project_files` | list project files |
 
-### Detection Capabilities (Python)
+Output: root cause, attack methods, fix recommendations, and an initial verdict (confirmed / potential / false_positive).
 
-- **Local type inference**: `conn = sqlite3.connect()` → `cur = conn.cursor()` → `cur.execute()` return-type propagation, catching the most common real-world SQL injection pattern
-- **Full source coverage**: `request.args.get('x')`, `request.args['x']` (subscript), `request.data`, `request.get_json()`, Django `request.GET['x']`, `sys.argv`, `os.environ`, `parse_qs` and more
-- **Sink suffix fallback**: `cursor.execute` / `conn.execute` / `db.session.execute` / `Model.objects.raw` database naming patterns
-- **Dict-access taint propagation**: `x = data.get('k')` / `x = d['k']` propagate taint from the parent object
-- **Type-specific sanitizers**: `int()` sanitizes all injection classes, `html.escape` only XSS, `shlex.quote` only command injection
-- **Dependency directory exclusion**: venv / site-packages / node_modules / dist and other third-party or build artifacts are skipped automatically
-- **CWE annotations**: every finding carries a standard CWE id (eval/exec → CWE-94, os.system → CWE-78, …), ready for external benchmarks
+### 4. Payload Verification (Sandbox Dynamic Attack)
 
-## Benchmark Evaluation (RealVuln Benchmark v2.0.0)
+Static analysis can only *guess* whether e.g. a SQL injection is exploitable. The platform ships a **sandbox executor** so the AI can attack for real:
 
-The static engine (Python part) was evaluated against the [RealVuln Benchmark](https://github.com/kolega-ai/Real-Vuln-Benchmark) — 66 real-world Python repositories, 1,903 manually labeled vulnerabilities, 279 false-positive traps:
+1. **Platform pre-start**: for web-attackable vuln types (SQLi/XSS/SSRF/SSTI/path traversal/open redirect/…), the target project is copied to a temp directory and launched as a subprocess (127.0.0.1, random port; missing dependencies are auto-installed on demand and cached) before verification begins
+2. **AI attacks**: the model sends a baseline request via the MCP tool `send_http_request`, then fires attack payloads and compares status codes/errors/content; `run_target_app` / `stop_target_app` control the app lifecycle
+3. **Verdict & evidence**: outputs `verdict` (confirmed/potential/false_positive), `confidence`, `exploit_payload`, `payload_effect` and the full evidence chain (baseline vs attack response comparison)
+
+**Live example** (SQL injection in the demo store app):
+
+| Request | Response | Conclusion |
+|---|---|---|
+| `/?q=xyz` (baseline) | 200 "No products found" | — |
+| `/?q='` | **500** SQL syntax error | injection point confirmed |
+| `/?q=' OR '1'='1` | 200, all 21 products returned (incl. hidden ones) | filter bypassed |
+| `/?q=' UNION SELECT sql FROM sqlite_master--` | full schema leaked | schema readable |
+| `/?q=' UNION SELECT email\|\|':'\|password FROM user--` | user credentials leaked | **data exfiltrated** |
+
+Final verdict `confirmed @ 1.0` with a complete evidence chain.
+
+> Note: the platform targets **vulnerability detection in normal code**; the sandbox exists to prove exploitability (real attack requests, verified by response). Scanned code runs in a temp copy, listens only on a localhost random port, has timeout protection, and is cleaned up on exit.
+
+### 5. AI Fix (separated from verification)
+
+- Fixing is a separate flow: the verification stage **does not expose** `apply_code_fix` (even if the model asks for it, the executor refuses) — "clicking analyze" can never modify code
+- Triggers: check "Auto fix" when scanning, or click "Fix" for a single finding on the results page
+- Mechanism: `apply_code_fix(file_path, start_line, end_line, new_code)` replaces a line range, creating a `.bak` backup first
+
+### 6. Results Browsing
+
+- Severity sorting (critical → high → medium → low; fixed in both the backend `SEVERITY_RANK` and the frontend)
+- AI verdict badges: ✅ confirmed / ⚠️ potential / ❌ false positive / unanalyzed
+- Finding detail: data-flow path, sink code, CWE id, full AI analysis, before/after fix diff
+
+## Supported Vulnerability Types
+
+| Type | CWE | Python | PHP | C/C++ |
+|---|---|---|---|---|
+| Command execution / code injection | CWE-78/94 | ✅ | ✅ | ✅ |
+| SQL injection | CWE-89 | ✅ | ✅ | ✅ |
+| Insecure deserialization | CWE-502 | ✅ | ✅ | — |
+| SSRF | CWE-918 | ✅ | ✅ | — |
+| XXE | CWE-611 | ✅ | — | — |
+| Path traversal / arbitrary file read | CWE-22 | ✅ | ✅ | ✅ |
+| ZIP Slip | CWE-22 | ✅ | — | — |
+| Open redirect | CWE-601 | ✅ | ✅ | — |
+| SSTI (server-side template injection) | CWE-94 | ✅ | — | — |
+| XSS (incl. template XSS) | CWE-79 | ✅ | ✅ | — |
+| File upload | CWE-434 | — | ✅ | — |
+| Hardcoded credentials | CWE-798 | ✅ | — | — |
+| Debug mode enabled | CWE-215 | ✅ | — | — |
+
+## Engine Capabilities
+
+- **Project-wide interprocedural taint analysis**: cross-file/cross-function taint graph, return-value propagation, call-site arg→param linking, module attribute links, scope namespacing to isolate same-named variables
+- **Local type inference**: `conn = sqlite3.connect()` → `cur = conn.cursor()` → `cur.execute()` cursor-type propagation hits the most common real-world SQLi patterns
+- **Full source coverage**: `request.args.get('x')`, `request.args['x']`, `request.data`, `request.get_json()`, Django `request.GET['x']`, `sys.argv`, `os.environ`, `parse_qs`, Flask-RESTX `api.payload`, etc.
+- **Sink suffix fallback**: `cursor.execute` / `conn.execute` / `db.session.execute` / `Model.objects.raw`; plus new sinks like os.exec*/spawn*, xmltodict, flask.Response, file operations
+- **Dict/attribute taint propagation**: `x = data.get('k')`, `x = d['k']`, `obj.attr` propagate from tainted objects
+- **Type-aware sanitizers**: `int()` sanitizes everything, `html.escape` only XSS, `shlex.quote` only command injection
+- **Template XSS analysis**: scans `.html/.j2` for `|safe` (skipping literals), autoescape off, `<script>` interpolations; view→template variable linking reduces false positives
+- **Dependency dir exclusion**: venv / site-packages / node_modules / dist skipped automatically
+- **CWE annotation**: every finding carries a CWE id, directly comparable against external benchmarks
+
+## Benchmark (RealVuln Benchmark v2.0.0)
+
+Full evaluation of the static engine against the [RealVuln Benchmark](https://github.com/kolega-ai/Real-Vuln-Benchmark) (66 real Python repos, 1,903 human-labeled vulnerabilities, 279 FP traps):
 
 | Metric | This platform | Semgrep | SonarQube | Snyk* |
 |---|---:|---:|---:|---:|
-| TP | 109 | 134 | 274 | 121 |
-| FP | **22** | 905 | 1587 | 280 |
-| Precision | **0.832** | 0.129 | 0.147 | 0.302 |
-| Recall | 0.057 | 0.070 | 0.144 | 0.177 |
-| F2 Score | 7.0 | 7.7 | 14.5 | 19.3 |
-| False-positive rate | **7.3%** | 77% | 85% | 71% |
+| TP | 253 | 134 | 274 | 121 |
+| FP | **136** | 905 | 1587 | 280 |
+| Precision | **0.650** | 0.129 | 0.147 | 0.302 |
+| Recall | **13.3%** | 7.0% | 14.4% | 17.7% |
+| F2 Score | **15.8** | 7.7 | 14.5 | 19.3 |
 
-\* Snyk's official results cover only 25/66 repos.
+\* Snyk's official data covers only 25/66 repos.
 
-- **F2 on par with Semgrep, precision 6.5× higher, false-positive rate an order of magnitude lower**, and 0 of the 279 FP traps triggered.
-- Per-family recall beating Semgrep: code injection 56%, command injection 30%, SSRF 20%, open redirect 18%, hardcoded credentials 13%.
-- Human-authored code precision 0.86 (TP=56, FP=9); LLM-generated code precision 0.80 (TP=53, FP=13).
-- Full evaluation report (methodology, fix list, per-family data, reproduction steps): [docs/evaluation-report.md](docs/evaluation-report.md).
+- **F2 is 2× Semgrep and beats SonarQube**, with 5× Semgrep's precision and an order of magnitude lower false-positive rate
+- Per-family recall: command injection **78%**, open redirect **47%**, SSRF **46%**, XXE **45%**, XSS 26% (template analyzer lifted it from 5%), SQL injection 23%, path traversal 23%
+- Methodology, per-family data and reproduction steps: [docs/评测报告.md](docs/评测报告.md) (中文) / [docs/evaluation-report.md](docs/evaluation-report.md) (English)
 
-## Version-Aware Rule Engine
-
-The rule engine decouples audit rules from the scanners and activates/adjusts rules dynamically based on the target language version or standard.
-
-### Rationale
-
-The same code carries very different risk depending on the language version. For example:
-
-- `preg_replace('/p/e')` — the `/e` modifier was deprecated in PHP 5.5 and removed in PHP 7.0 → only high severity below those versions
-- `create_function()` — deprecated in PHP 7.2, removed in PHP 7.4 → the version decides whether to report
-- `mysql_query()` — a standard API in PHP 5.x, a dangerous removed relic in PHP 7.0+
-
-Based on the user-selected (or auto-detected) version, only the rules relevant to that version are activated, with severity adjusted dynamically.
-
-### Supported Languages & Version Ranges
-
-| Language | Version range | Key milestones |
-|----------|---------------|----------------|
-| PHP | 5.0 ~ 8.0 | 5.3 PDO charset / 5.5 preg_replace / 7.0 mysql_* / 8.0 assert |
-| Python | 2.7 ~ 3.13 | 2.7 EOL / 3.6 f-strings / 3.8 walrus operator |
-| C/C++ | C89 ~ C++23 | C99 gets / C11 gets_removed / C++17 filesystem |
-
-### Rule Structure
-
-Every rule is a standalone `AuditRule` dataclass:
-
-- `min_version` / `max_version` — the version range where the rule is active
-- `default_severity` — default severity
-- `severity_overrides` — per-version severity adjustments (e.g. an API that is critical on old versions but info on newer ones)
-- `confidence` — rule confidence (0~1)
-
-### Automatic Version Detection
-
-PHP projects support automatic version detection from source: scanning `composer.json`, characteristic function calls and syntax features to produce the best matching version. Users may also set it manually in the web UI.
-
-## Usage
+## Getting Started
 
 ```bash
 # Clone and install dependencies
@@ -165,19 +219,19 @@ pip install -r requirements.txt
 # Run
 cd backend
 python app.py
-# Open http://localhost:5000
+# visit http://localhost:5000
 ```
 
 ### Docker
 
 ```bash
 docker compose up -d
-# Open http://localhost:5000
+# visit http://localhost:5000
 ```
 
-### Configuration
+### AI Configuration
 
-Configure the AI API in `backend/.env` (or on the web "AI Settings" page):
+Configure the AI API in `backend/.env` (or via the "AI Settings" web page, which also tests connectivity):
 
 ```env
 DEEPSEEK_API_KEY=***
@@ -185,41 +239,47 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
 ```
 
-The AI Settings page ships presets for common providers: DeepSeek (`deepseek-v4-flash`), OpenAI (`gpt-4.1`), local Ollama (`qwen2.5`), plus any custom OpenAI-compatible endpoint.
+The AI settings page ships presets for common providers: DeepSeek (`deepseek-v4-flash`), OpenAI (`gpt-4.1`), local Ollama (`qwen2.5`), plus any custom OpenAI-compatible endpoint.
 
 ## Tech Stack
 
 | Layer | Technology |
-|-------|------------|
+|------|------|
 | Web framework | Flask + Jinja2 |
 | Database | SQLite + SQLAlchemy ORM |
 | AST/CST parsing | Python AST + tree-sitter (PHP/C/C++) |
-| Taint tracking | Adjacency list + BFS path search + sanitizer recognition + local type inference (cursor/connection objects) + dict-access propagation |
-| Rule engine | Version-aware rule scheduling (min/max_version + severity_overrides) |
-| Data-flow analysis | Regex patterns + protection-level assessment + exploit-difficulty rating |
-| AST pattern analysis | Semantic pattern matching (parameterized queries / allowlists / deserialization chains / hardcoded credentials / debug mode / dangerous combos) |
-| AI integration | OpenAI-compatible API (DeepSeek / GPT / custom) |
-| Frontend | Vanilla JS + CSS variable theme system + HarmonyOS Sans + glassmorphism / aurora motion design |
+| Taint tracking | project-wide taint graph + BFS path search + sanitizer recognition + local type inference + dict/attribute/return propagation |
+| Rule engine | version-aware rule scheduling (min/max_version + severity_overrides) |
+| Template analysis | template XSS detection + view→template variable linking |
+| AI integration | OpenAI-compatible API (DeepSeek/GPT/custom) + MCP tool protocol (JSON/XML call parsing, retries, hardened JSON repair) |
+| Sandbox verification | subprocess sandbox (temp copy + random port + on-demand dependency install + HTTP attack verification) |
+| Frontend | Vanilla JS + CSS variable theming + HarmonyOS Sans + glassmorphism/aurora effects |
 
-## Directory Structure
+## Directory Layout
 
 ```
 backend/
-├── app.py                    # Flask entry point (routes, scan orchestration)
-├── engine/                   # Static analysis engine (four-stage pipeline)
-│   ├── pipeline.py           # Pipeline orchestration (dedup, CWE annotation, dir exclusion)
-│   ├── python_scanner.py     # Python scanner (AST + taint tracking + local type inference)
+├── app.py                    # Flask entry (routes, scan orchestration)
+├── models.py                 # data models (vuln/project/scan + severity ranking)
+├── engine/                   # static analysis engine (multi-stage pipeline)
+│   ├── pipeline.py           # pipeline orchestration (dedup, CWE, dir exclusion)
+│   ├── python_scanner.py     # Python scanner (AST + project-wide taint tracking)
 │   ├── php_scanner.py        # PHP scanner (tree-sitter + session taint tracking)
 │   ├── c_scanner.py          # C/C++ scanner
-│   ├── taint_tracker.py      # Taint graph (BFS path search)
-│   ├── sinks_py.py           # Python dangerous-function table + CWE mapping
-│   ├── sources_py.py         # Python input-source table
-│   └── ast_analyzer.py       # AST pattern analysis (parameterized queries, creds, debug mode…)
-├── ai/                       # AI deep analysis (prompts, client)
+│   ├── taint_tracker.py      # taint graph (cross-file/cross-function BFS)
+│   ├── sinks_py.py           # Python sink table + CWE mapping
+│   ├── sources_py.py         # Python source table
+│   ├── ast_analyzer.py       # AST patterns (parameterized queries/creds/debug/ZIP Slip)
+│   ├── template_analyzer.py  # template XSS (|safe + view→template linking)
+│   ├── sandbox.py            # sandbox executor (dynamic attack infrastructure)
+│   ├── mcp_tools.py          # MCP tool set (source exploration/fix/sandbox attack)
+│   ├── ai_verifier.py        # AI verification flow wrapper
+│   └── payload_builder.py    # payload construction
+├── ai/                       # AI client and prompts
 ├── ai_chat_core/             # OpenAI-compatible chat core (model routing)
-├── api/                      # REST API (projects / scans / vulns)
-├── static/                   # Frontend assets (CSS, HarmonyOS Sans font)
+├── api/                      # REST API (projects/scans/vulns/settings)
+├── static/                   # frontend assets (CSS, HarmonyOS Sans font)
 ├── templates/                # Jinja2 pages
-├── docs/                     # Evaluation report and other docs
-└── test_audit_logic.py       # Audit-logic regression tests
+├── docs/                     # evaluation reports etc.
+└── test_audit_logic.py       # audit logic regression tests (14 cases)
 ```
