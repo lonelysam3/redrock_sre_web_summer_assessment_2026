@@ -139,6 +139,49 @@ MCP_TOOLS: list[MCPTool] = [
             "required": ["file_path", "start_line", "end_line", "new_code"],
         },
     ),
+    # ---- 沙箱动态验证工具 ----
+    MCPTool(
+        name="run_target_app",
+        description=(
+            "在本地沙箱中启动被扫描的目标应用（Flask 项目），返回监听端口。"
+            "用于动态验证 Web 类漏洞（SQL 注入/SSRF/XSS 等）：启动后用 "
+            "send_http_request 发送攻击 Payload，根据真实响应判定漏洞。"
+            "验证结束请调用 stop_target_app。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    MCPTool(
+        name="send_http_request",
+        description=(
+            "向沙箱中运行的目标应用发送 HTTP 请求，返回状态码和响应内容摘要。"
+            "method: GET/POST；path: 请求路径（可含查询串）；"
+            "params: 查询参数对象（如 {\"q\": \"payload\"}）；"
+            "data: POST 表单体字符串（如 key=value&key2=value2）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "method": {"type": "string", "description": "HTTP 方法，默认 GET"},
+                "path": {"type": "string", "description": "请求路径，如 / 或 /product/1"},
+                "params": {"type": "object", "description": "查询参数对象"},
+                "data": {"type": "string", "description": "POST 表单体（key=value&...）"},
+            },
+            "required": ["path"],
+        },
+    ),
+    MCPTool(
+        name="stop_target_app",
+        description="停止并清理沙箱中运行的目标应用。",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -202,9 +245,11 @@ class MCPToolExecutor:
 
     def __init__(self, project_path: str,
                  source_code_map: dict[str, str] | None = None,
-                 allow_fix: bool = False):
+                 allow_fix: bool = False,
+                 sandbox=None):
         self.project_path = project_path
         self._allow_fix = allow_fix  # 只有修复流程才允许 apply_code_fix
+        self._sandbox = sandbox      # 沙箱执行器（验证流程传入）
         self._source_map = source_code_map or {}
         if not self._source_map:
             self._build_source_map()
@@ -496,6 +541,9 @@ class MCPToolExecutor:
                 int(arguments.get("end_line", 1)),
                 arguments.get("new_code", ""),
             ),
+            "run_target_app": lambda: self._run_target_app(),
+            "send_http_request": lambda: self._send_http_request(arguments),
+            "stop_target_app": lambda: self._stop_target_app(),
         }
 
         handler = tool_map.get(tool_name)
@@ -507,19 +555,63 @@ class MCPToolExecutor:
         except Exception as e:
             return json.dumps({"error": f"工具执行失败: {str(e)}"}, ensure_ascii=False)
 
+    # ---- 沙箱工具实现 ----
+
+    def _run_target_app(self) -> str:
+        if self._sandbox is None:
+            return json.dumps({
+                "success": False,
+                "error": "沙箱不可用（目标应用不是可启动的 Flask 项目）",
+            }, ensure_ascii=False)
+        return json.dumps(self._sandbox.start(), ensure_ascii=False)
+
+    def _send_http_request(self, arguments: dict) -> str:
+        if self._sandbox is None:
+            return json.dumps({
+                "success": False,
+                "error": "沙箱不可用，请先 run_target_app",
+            }, ensure_ascii=False)
+        params = arguments.get("params")
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except Exception:
+                params = None
+        resp = self._sandbox.request(
+            method=arguments.get("method", "GET"),
+            path=arguments.get("path", "/"),
+            params=params if isinstance(params, dict) else None,
+            data=arguments.get("data"),
+        )
+        # 响应摘要限制体积，避免 token 爆炸
+        if isinstance(resp.get("body"), str):
+            resp["body"] = resp["body"][:2000]
+        if isinstance(resp.get("headers"), dict):
+            resp["headers"] = dict(list(resp["headers"].items())[:10])
+        return json.dumps(resp, ensure_ascii=False)
+
+    def _stop_target_app(self) -> str:
+        if self._sandbox is None:
+            return json.dumps({"success": True}, ensure_ascii=False)
+        return json.dumps(self._sandbox.stop(), ensure_ascii=False)
+
 
 # ========================================================================
 # Prompt 生成
 # ========================================================================
 
-def build_tool_system_prompt(include_fix_tool: bool = False) -> str:
+def build_tool_system_prompt(include_fix_tool: bool = False,
+                            include_sandbox: bool = False) -> str:
     """生成描述可用工具的 System Prompt 片段。
 
     include_fix_tool=False（默认）：不暴露 apply_code_fix —— 验证流程专用，
     保证"payload 验证"与"AI 修复"分离。
+    include_sandbox=True：暴露沙箱动态验证工具（run_target_app 等）。
     """
     tools = [t for t in MCP_TOOLS
-             if include_fix_tool or t.name != "apply_code_fix"]
+             if (include_fix_tool or t.name != "apply_code_fix")
+             and (include_sandbox or not t.name.startswith(
+                 ("run_target_app", "send_http_request", "stop_target_app")))]
 
     tool_list = "\n".join(
         f"- **{t.name}**: {t.description}"

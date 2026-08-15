@@ -37,15 +37,28 @@ VERIFY_SYSTEM_PROMPT = """你是一名资深渗透测试专家。
 
 1. **验证漏洞** — 使用工具深入探索源码，判断漏洞是否真实可利用
 2. **生成 Payload** — 如果确认漏洞，给出精准的攻击载荷
+3. **动态攻击验证** — Web 类漏洞（SQL 注入/SSRF/XSS/路径穿越/开放重定向等）
+   优先在沙箱中实际攻击：run_target_app 启动目标应用 → send_http_request
+   发送攻击 Payload → 根据真实响应判定，最后 stop_target_app。
 
 ## 工作流程
 
 1. 先调用 search_dangerous_calls 定位所有危险函数
 2. 调用 search_user_inputs 定位所有用户输入入口
-3. 调用 trace_variable_flow 追踪关键变量的传播路径
-4. 调用 read_file_region 读取关键代码上下文
-5. 调用 search_project 跨文件搜索相关配置（如 WAF、过滤器）
+3. 读取关键代码上下文（read_file_region）
+4. **动态验证（必做，优先于静态推断）**：调用 run_target_app 启动应用，
+   用 send_http_request 发送攻击 Payload。先发正常请求做基线，再发
+   Payload 请求对比响应（状态码/报错/内容差异）。攻击完成或无法继续
+   时调用 stop_target_app。
+5. 如时间允许再补充 search_project 等静态佐证
 6. 综合分析后输出最终 JSON 判定结果
+
+## 动态攻击技巧
+
+- SQL 注入：发送 ' 观察是否报 SQL 错误；用 ' OR '1'='1-- 观察结果集变化
+- SSRF：让应用请求内网地址（如 127.0.0.1:自身端口）观察响应
+- XSS：发送 <script> 观察是否原样回显在响应中
+- 对比基线响应与攻击响应，把关键差异写进 evidence
 
 ## 重要约束
 
@@ -54,14 +67,14 @@ VERIFY_SYSTEM_PROMPT = """你是一名资深渗透测试专家。
 
 ## 判定标准
 
-- **confirmed**: 数据流完整、无可行的安全控制、Payload 确定可触发
-- **potential**: 存在风险但缺少关键证据（如不确定 WAF 配置）
+- **confirmed**: 沙箱中攻击成功（响应出现预期特征：SQL 报错/数据泄露/命令输出/回显等）
+- **potential**: 应用无法启动或攻击效果无法确认
 - **false_positive**: 代码有有效安全控制（参数化查询/白名单/强类型校验）
 
 ## 重要
 
 不要重复基础分析！如果漏洞已有 AI 分析结果（在上下文提供），直接基于它验证，
-不要再分析漏洞成因。专注于验证与 Payload 构建。"""
+不要再分析漏洞成因。专注于构建 Payload 与真实攻击。"""
 
 VERIFY_TEMPLATE = """## 漏洞验证任务（不修改代码）
 
@@ -98,21 +111,30 @@ VERIFY_TEMPLATE = """## 漏洞验证任务（不修改代码）
 
 ### 漏洞类型说明
 {description}
+{sandbox_context}
 
 ---
 
-请使用工具探索代码，验证漏洞是否真实，然后输出 JSON：
+请使用工具探索代码，对 Web 类漏洞尽量在沙箱中实际攻击，然后输出 JSON：
 
 ```json
 {{
     "verdict": "confirmed|potential|false_positive",
     "confidence": 0.0-1.0,
-    "exploit_payload": "最有效的攻击 Payload",
+    "exploit_payload": "实际使用的最有效攻击 Payload",
     "payload_effect": "Payload 的预期效果",
-    "evidence": "验证证据（3-5 句话，引用具体的行号和代码）"
+    "evidence": "验证证据（3-5 句话，引用具体行号和代码；若做了动态攻击，说明基线响应与攻击响应的差异）"
 }}
 ```
 """
+
+# 适合沙箱动态攻击的漏洞类型（验证时平台会预启动目标应用）
+WEB_ATTACKABLE_TYPES = {
+    "sql_injection", "xss", "ssrf", "ssti", "path_traversal",
+    "open_redirect", "command_execution", "arbitrary_file_read",
+    "insecure_deserialization", "file_upload",
+}
+
 
 FIX_SYSTEM_PROMPT = """你是一名资深安全修复工程师。
 
@@ -446,7 +468,7 @@ class AIClient:
     def verify_with_tools(
         self, vuln: dict, context_code: str = "",
         php_version: str = "", project_path: str = "",
-        max_tool_rounds: int = 4,
+        max_tool_rounds: int = 6,
     ) -> dict | None:
         """
         使用 MCP 工具自主验证漏洞可利用性（只验证，不修改代码）。
@@ -468,12 +490,37 @@ class AIClient:
             MCPToolExecutor, build_tool_system_prompt, parse_tool_calls
         )
 
+        vuln_type = vuln.get("vuln_type", "")
+
+        # 沙箱动态验证：Web 类漏洞由平台预启动目标应用，模型只需发请求
+        from engine.sandbox import SandboxApp
+        sandbox = SandboxApp(project_path) if project_path else None
+        sandbox_ctx = ""
+        if sandbox and vuln_type in WEB_ATTACKABLE_TYPES:
+            started = sandbox.start()
+            if started.get("success"):
+                sandbox_ctx = (
+                    f"\n### 沙箱动态验证环境\n"
+                    f"目标应用已启动于 http://127.0.0.1:{started['port']}/ "
+                    f"（入口 {started.get('entry', '')}）。\n"
+                    f"请直接用 send_http_request 发送攻击 Payload（无需再调用 "
+                    f"run_target_app）。先发正常请求做基线，再发 Payload 对比响应。"
+                    f"验证结束后可调用 stop_target_app。\n"
+                )
+            else:
+                sandbox_ctx = (
+                    f"\n### 沙箱动态验证环境\n"
+                    f"沙箱启动失败：{started.get('error', '')[:200]}\n"
+                    f"请改用静态分析判定。\n"
+                )
+
         # allow_fix=False：验证阶段不允许 apply_code_fix（双重保险：
         # 系统提示不提供修复工具，执行器也会拒绝）
-        tool_executor = MCPToolExecutor(project_path, allow_fix=False) if project_path else None
-        tool_prompt = build_tool_system_prompt(include_fix_tool=False) if tool_executor else ""
-
-        vuln_type = vuln.get("vuln_type", "")
+        tool_executor = MCPToolExecutor(project_path, allow_fix=False,
+                                        sandbox=sandbox) if project_path else None
+        tool_prompt = (build_tool_system_prompt(include_fix_tool=False,
+                                                include_sandbox=True)
+                       if tool_executor else "")
 
         # 版本上下文
         php_ctx = ""
@@ -502,11 +549,13 @@ class AIClient:
             description=VULN_TYPE_DESCRIPTIONS.get(vuln_type, ""),
             php_version_context=php_ctx,
             context_code=context_code,
+            sandbox_context=sandbox_ctx,
         )
 
         return self._run_tool_loop(
             initial_prompt, VERIFY_SYSTEM_PROMPT, tool_prompt,
             tool_executor, max_tool_rounds, "VERIFY",
+            sandbox=sandbox,
         )
 
     def fix_with_tools(
@@ -568,8 +617,25 @@ class AIClient:
 
     def _run_tool_loop(self, initial_prompt: str, system_prompt: str,
                        tool_prompt: str, tool_executor, max_tool_rounds: int,
-                       tag: str) -> dict | None:
-        """MCP 工具多轮对话循环（验证与修复共用）。"""
+                       tag: str, sandbox=None) -> dict | None:
+        """MCP 工具多轮对话循环（验证与修复共用）。sandbox 在结束后清理。"""
+        from engine.mcp_tools import parse_tool_calls
+
+        try:
+            return self._run_tool_loop_inner(
+                initial_prompt, system_prompt, tool_prompt, tool_executor,
+                max_tool_rounds, tag)
+        finally:
+            if sandbox is not None:
+                try:
+                    sandbox.stop()
+                except Exception:
+                    pass
+
+    def _run_tool_loop_inner(self, initial_prompt: str, system_prompt: str,
+                             tool_prompt: str, tool_executor,
+                             max_tool_rounds: int, tag: str) -> dict | None:
+        """MCP 工具多轮对话循环。"""
         from engine.mcp_tools import parse_tool_calls
 
         conversation_history = initial_prompt
@@ -623,7 +689,9 @@ class AIClient:
                 break
 
         if not final_result and last_response:
-            final_result = self._parse_json(last_response)
+            parsed = self._parse_json(last_response)
+            if parsed and not is_tool_call_result(parsed):
+                final_result = parsed
 
         # 轮次耗尽仍未得到最终 JSON：追加一轮"强制输出"（不再允许工具调用）
         if not final_result and tool_executor and last_response:
@@ -640,7 +708,7 @@ class AIClient:
                                     max_tokens=8192)
             if forced:
                 parsed = self._parse_json(forced)
-                if parsed:
+                if parsed and not is_tool_call_result(parsed):
                     final_result = parsed
                     print(f"[{tag}] 强制输出轮解析成功")
                 else:
