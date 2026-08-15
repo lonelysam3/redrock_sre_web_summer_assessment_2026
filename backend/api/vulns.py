@@ -396,6 +396,11 @@ def analyze_all_vulns():
                     except Exception:
                         source_code_map[v.file_path] = v.source_code or ""
 
+            # MCP 验证（不依赖 payload 语义，缺失会导致 reports 未定义被静默吞掉）
+            verifier = AIVerifier(client)
+            reports = verifier.verify(vuln_dicts, [], source_code_map,
+                                      project_path=proj_path, php_version=php_version)
+
             for report in reports:
                 if report.vuln_id < len(analyzed_vulns):
                     av = analyzed_vulns[report.vuln_id]
