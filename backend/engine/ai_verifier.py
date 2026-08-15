@@ -190,13 +190,10 @@ class AIVerifier:
             )
             if result and isinstance(result, dict):
                 verdict_str = result.get("verdict", "potential")
-                # 攻击成功 → confirmed；其余（攻击失败/无法确认/误判）一律按
-                # "攻击失败 → 不确定"处理（用户要求：失败改 ai 不确定）
                 verdict_map = {
                     "confirmed": VerificationResult.CONFIRMED,
                     "potential": VerificationResult.POTENTIAL,
-                    "false_positive": VerificationResult.POTENTIAL,
-                    "uncertain": VerificationResult.POTENTIAL,
+                    "false_positive": VerificationResult.FALSE_POS,
                 }
                 verdict = verdict_map.get(verdict_str, VerificationResult.POTENTIAL)
 

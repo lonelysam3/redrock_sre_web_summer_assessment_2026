@@ -1034,7 +1034,7 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log,
     log.write(f"[VERIFY] MCP verification reports: {len(reports)}\n")
     log.flush()
 
-    # 写入 DB（验证结果）：攻击成功 → 确认；攻击失败 → AI 不确定
+    # 写入 DB（验证结果）
     verified = 0
     for report in reports:
         idx = report.vuln_id
@@ -1046,13 +1046,16 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log,
             if report.result == VerificationResult.CONFIRMED:
                 v.status = "confirmed"
                 v.ai_payload_result = "success"
-                v.ai_is_vulnerable = "true"
                 verified += 1
-            else:
-                # 攻击失败/无法确认 → AI 不确定
+            elif report.result == VerificationResult.POTENTIAL:
                 v.status = "potential"
                 v.ai_payload_result = "failed"
-                v.ai_is_vulnerable = "uncertain"
+            elif report.result == VerificationResult.FALSE_POS:
+                v.status = "false_positive"
+                v.ai_payload_result = "failed"
+            else:
+                v.status = "potential"
+                v.ai_payload_result = "uncertain"
 
     db.session.commit()
     log.write(f"[VERIFY] done: {verified} confirmed, {len(vulns) - verified} uncertain/potential\n")
