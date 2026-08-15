@@ -12,7 +12,7 @@
   POST   /api/vulns/<id>/analyze — 手动触发 AI 分析
 """
 from flask import Blueprint, request, jsonify
-from models import db, Vulnerability, SEVERITY_RANK
+from models import db, Vulnerability, SEVERITY_RANK, json_field
 
 # 创建蓝图，挂载到 /api/vulns
 vulns_bp = Blueprint("vulns", __name__)
@@ -170,10 +170,10 @@ def analyze_vuln(vuln_id: int):
             v.ai_cwe_id = r.get("cwe_id", "")
             v.ai_owasp_category = r.get("owasp_category", "")
             # 嵌套对象需要序列化为 JSON 字符串
-            v.ai_root_cause = json.dumps(r.get("root_cause", {}), ensure_ascii=False)
-            v.ai_attack_vector = json.dumps(r.get("attack_analysis", {}), ensure_ascii=False)
+            v.ai_root_cause = json_field(r.get("root_cause"))
+            v.ai_attack_vector = json_field(r.get("attack_analysis"))
             # 修复建议只存 ai_fix_suggestion；ai_fix_code 专属"AI 修复"流程
-            v.ai_fix_suggestion = json.dumps(r.get("fix_recommendation", {}), ensure_ascii=False)
+            v.ai_fix_suggestion = json_field(r.get("fix_recommendation"))
         db.session.commit()
 
         # ---- 自动 Payload 构建 + 验证（不生成修复） ----
@@ -327,10 +327,10 @@ def analyze_all_vulns():
                     v.ai_severity = r.get("severity", v.severity)
                     v.ai_cwe_id = r.get("cwe_id", "")
                     v.ai_owasp_category = r.get("owasp_category", "")
-                    v.ai_root_cause = json.dumps(r.get("root_cause", {}), ensure_ascii=False)
-                    v.ai_attack_vector = json.dumps(r.get("attack_analysis", {}), ensure_ascii=False)
+                    v.ai_root_cause = json_field(r.get("root_cause"))
+                    v.ai_attack_vector = json_field(r.get("attack_analysis"))
                     # 修复建议只存 ai_fix_suggestion；ai_fix_code 专属"AI 修复"流程
-                    v.ai_fix_suggestion = json.dumps(r.get("fix_recommendation", {}), ensure_ascii=False)
+                    v.ai_fix_suggestion = json_field(r.get("fix_recommendation"))
                     analyzed += 1
             else:
                 failed += 1

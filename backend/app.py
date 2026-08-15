@@ -922,11 +922,11 @@ def _run_ai_analysis_on_vulns(scan_id: int, project_path: str, client, log):
                     v.ai_severity = r.get("severity", v.severity)
                     v.ai_cwe_id = r.get("cwe_id", "")
                     v.ai_owasp_category = r.get("owasp_category", "")
-                    v.ai_root_cause = _json.dumps(r.get("root_cause", {}), ensure_ascii=False)
-                    v.ai_attack_vector = _json.dumps(r.get("attack_analysis", {}), ensure_ascii=False)
+                    v.ai_root_cause = json_field(r.get("root_cause"))
+                    v.ai_attack_vector = json_field(r.get("attack_analysis"))
                     # 修复建议只存 ai_fix_suggestion；ai_fix_code 专属"AI 修复"流程
                     # （分析阶段不写 ai_fix_code，避免被误认为已应用修复）
-                    v.ai_fix_suggestion = _json.dumps(r.get("fix_recommendation", {}), ensure_ascii=False)
+                    v.ai_fix_suggestion = json_field(r.get("fix_recommendation"))
                     analyzed += 1
 
             db.session.commit()

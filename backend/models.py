@@ -146,6 +146,17 @@ SEVERITY_RANK = case(
 )
 
 
+def json_field(obj) -> str:
+    """非空 dict/list 序列化为 JSON 字符串；空值返回 ""。
+    避免把 {} 存进 DB 导致前端渲染出空花括号。"""
+    if isinstance(obj, (dict, list)) and obj:
+        import json as _json
+        return _json.dumps(obj, ensure_ascii=False)
+    if isinstance(obj, str):
+        return obj
+    return ""
+
+
 class AISettings(db.Model):
     """
     AI 配置表（单例模式）
