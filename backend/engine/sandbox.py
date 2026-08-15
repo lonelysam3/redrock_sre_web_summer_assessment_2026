@@ -52,6 +52,12 @@ LAUNCHER = '''\
 import importlib.util
 import os
 
+# 防止继承平台开发服务器（Werkzeug reloader）的套接字 FD：
+# run_simple 无条件检查 WERKZEUG_RUN_MAIN，会把 WERKZEUG_SERVER_FD
+# 当成本进程的监听 socket 用，导致 WinError 10038。
+os.environ.pop("WERKZEUG_RUN_MAIN", None)
+os.environ.pop("WERKZEUG_SERVER_FD", None)
+
 ENTRY = {entry!r}
 PORT = int(os.environ.get("SANDBOX_PORT", "5100"))
 
@@ -118,6 +124,9 @@ class SandboxApp:
         env = dict(os.environ)
         env["SANDBOX_PORT"] = str(port)
         env["PYTHONUNBUFFERED"] = "1"
+        # 不要继承平台 Werkzeug reloader 的套接字 FD（会致 WinError 10038）
+        env.pop("WERKZEUG_RUN_MAIN", None)
+        env.pop("WERKZEUG_SERVER_FD", None)
 
         # 启动 + 按需补装缺失模块（最多 MAX_MISSING_DEPS 个）
         deps_dirs: list[str] = []
