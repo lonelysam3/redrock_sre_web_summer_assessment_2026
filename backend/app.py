@@ -39,7 +39,7 @@ from flask import Flask
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import Config
-from models import db, Project, ScanTask, Vulnerability, AISettings, now_cn, SEVERITY_RANK
+from models import db, Project, ScanTask, Vulnerability, AISettings, now_cn, SEVERITY_RANK, json_field
 from engine import scan_project
 from ai.client import get_ai_client, reset_ai_client
 
