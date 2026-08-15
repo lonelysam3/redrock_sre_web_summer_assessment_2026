@@ -163,13 +163,23 @@ class PythonScanner:
         # 当前文件内的局部类型推断：变量名 → 类型（db.Connection / db.Cursor 等）
         self._local_types: dict[str, str] = {}
 
+        # ---- 项目级（跨函数/跨文件）分析状态 ----
+        self._prefix = ""                  # 当前作用域的变量名前缀（作用域隔离）
+        self._current_file = ""            # 当前正在扫描的文件
+        self._current_module = ""          # 当前文件的项目内模块路径（如 store.services.catalog）
+        self._current_qualname = ""        # 当前函数限定名（模块级作用域为空）
+        self._current_class = ""           # 当前函数所属类名（无则空）
+        self._file_info: dict[str, dict] = {}   # file_path -> 解析信息（tree/aliases/scopes/...）
+        self._func_index: dict[tuple, dict] = {}  # (module, qualname) -> FunctionInfo
+        self._module_files: dict[str, str] = {}   # 模块路径 -> file_path
+
     # ========================================================================
     # 公开接口
     # ========================================================================
 
     def scan_directory(self, dir_path: str) -> list[dict]:
         """
-        扫描整个目录下的所有 Python 文件。
+        扫描整个目录下的所有 Python 文件（项目级跨文件分析）。
 
         参数:
             dir_path: 项目源码目录的绝对路径
@@ -177,22 +187,73 @@ class PythonScanner:
         返回:
             list[dict]: 所有发现的漏洞列表
         """
-        all_vulns = []
-        for file_path in self._collect_python_files(dir_path):
+        files = self._collect_python_files(dir_path)
+        source_map = {}
+        for file_path in files:
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    source = f.read()
-                vulns = self.scan_source(source, file_path)
-                all_vulns.extend(vulns)
-            except SyntaxError:
-                continue  # 跳过语法错误的文件
+                    source_map[file_path] = f.read()
             except Exception as e:
-                print(f"[WARN] 扫描 {file_path} 出错: {e}")
-        return all_vulns
+                print(f"[WARN] 读取 {file_path} 出错: {e}")
+        if not source_map:
+            return []
+        return self.scan_project(source_map)
+
+    def scan_project(self, source_code_map: dict[str, str]) -> list[dict]:
+        """
+        项目级扫描（v3）：跨函数 + 跨文件污点分析。
+
+        与旧版逐文件扫描不同，这里：
+          1. 变量按 (模块, 函数) 命名空间隔离，消除同名变量跨函数串扰；
+          2. 函数参数一律视为不可信 source；
+          3. return 值传播：return expr → 调用点 `x = f(...)`；
+          4. 调用点实参 → 形参、被调函数返回值 → 调用点变量（跨文件也生效，
+             支持 from a.b import f / import db; db.f 等形式）；
+          5. 模块属性链接：import db; c = db.c → 链接到 db 模块的顶层变量。
+
+        参数:
+            source_code_map: {file_path: source_code} 映射
+
+        返回:
+            list[dict]: 所有发现的漏洞列表
+        """
+        self._prepare_project(source_code_map)
+        tracker = TaintTracker(file_path="<project>")
+
+        # ---- 第一轮：各作用域内收集 source/sink/赋值/return ----
+        for path, info in self._file_info.items():
+            source_code = info["source"]
+            tree = info["tree"]
+            aliases = info["aliases"]
+            self._current_file = path
+            self._current_module = info["module"]
+            self._local_types = self._build_local_types(tree, aliases)
+            for qualname, func_node, clsname, nodes in info["scopes"]:
+                self._prefix = self._make_prefix(info["key"], qualname)
+                self._current_qualname = qualname
+                self._current_class = clsname
+                self._visit_sources(nodes, tracker, source_code, aliases)
+                self._visit_param_sources(func_node, tracker, source_code)
+                self._visit_sinks(nodes, tracker, source_code, aliases)
+                self._visit_assignments(nodes, tracker, source_code, aliases)
+                self._visit_returns(nodes, tracker, source_code)
+
+        # ---- 第二轮：调用点链接（函数索引就绪后） ----
+        for path, info in self._file_info.items():
+            for qualname, func_node, clsname, nodes in info["scopes"]:
+                self._prefix = self._make_prefix(info["key"], qualname)
+                self._current_qualname = qualname
+                self._current_class = clsname
+                self._current_file = path
+                self._current_module = info["module"]
+                self._link_calls(nodes, tracker, info)
+
+        raw = tracker.analyze()
+        return self._format_results(raw, {}, "")
 
     def scan_source(self, source_code: str, file_path: str = "<unknown>") -> list[dict]:
         """
-        扫描单个文件的源代码。
+        扫描单个文件的源代码（兼容旧接口，内部走项目级流程）。
 
         参数:
             source_code: 源代码字符串
@@ -201,95 +262,272 @@ class PythonScanner:
         返回:
             list[dict]: 该文件中发现的漏洞列表
         """
-        # ---- 1. 解析 AST ----
+        return self.scan_project({file_path: source_code})
+
+    # ========================================================================
+    # 项目预处理：解析、作用域切分、函数索引
+    # ========================================================================
+
+    def _prepare_project(self, source_code_map: dict[str, str]) -> None:
+        """解析全部文件，建立作用域、别名、函数索引、模块索引。"""
+        self._file_info = {}
+        self._func_index = {}
+        self._module_files = {}
+
+        # ---- 项目根目录：所有文件的公共父目录 ----
+        files = list(source_code_map.keys())
+        root = os.path.dirname(files[0])
+        for f in files[1:]:
+            try:
+                root = os.path.commonpath([root, os.path.dirname(f)])
+            except ValueError:
+                root = os.path.dirname(files[0])
+                break
+
+        # ---- 第一趟：逐文件解析，计算模块路径、作用域、别名 ----
+        for file_path, source_code in source_code_map.items():
+            try:
+                tree = ast.parse(source_code, filename=file_path)
+            except SyntaxError:
+                continue
+            # 父节点引用（_get_assigned_var 依赖）
+            for node in ast.walk(tree):
+                for child in ast.iter_child_nodes(node):
+                    child._parent = node  # type: ignore
+
+            module = self._module_path_of(file_path, root)
+            info = {
+                "source": source_code,
+                "tree": tree,
+                "module": module,
+                "key": module or file_path.replace("\\", "/"),
+                "aliases": {},
+                "alias_mod": {},
+                "classes": set(),
+                "scopes": [],
+                "module_vars": set(),
+            }
+            self._build_aliases(tree, module, info)
+            self._file_info[file_path] = info
+            self._module_files[module] = file_path
+
+        # ---- 第二趟：切分作用域（模块级 + 每个函数） ----
+        for file_path, info in self._file_info.items():
+            tree = info["tree"]
+            # 类名收集（调用点解析 Class.m() 用）
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    info["classes"].add(node.name)
+            scopes = [("", None, "", self._nodes_pruned(tree, include_self=False))]
+            # 模块级变量索引（import db; c = db.c 跨文件链接用）
+            for node in scopes[0][3]:
+                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                    targets = (node.targets if isinstance(node, ast.Assign)
+                               else [node.target])
+                    for t in targets:
+                        n = self._name_of(t)
+                        if n:
+                            info["module_vars"].add(n)
+                elif isinstance(node, (ast.For, ast.With)):
+                    # for x in ...: / with ... as x: 顶层的绑定也计入模块变量
+                    bind = node.target if isinstance(node, ast.For) else None
+                    if isinstance(node, ast.With):
+                        for item in node.items:
+                            if item.optional_vars:
+                                n = self._name_of(item.optional_vars)
+                                if n:
+                                    info["module_vars"].add(n)
+                    elif bind:
+                        for t in (bind.elts if isinstance(bind, (ast.Tuple, ast.List)) else [bind]):
+                            n = self._name_of(t)
+                            if n:
+                                info["module_vars"].add(n)
+            for func in self._iter_functions(tree):
+                qualname, clsname = self._func_qualname(func)
+                scopes.append((qualname, func, clsname,
+                               self._nodes_pruned(func, include_self=True)))
+            info["scopes"] = scopes
+
+        # ---- 第三趟：全局函数索引 (module, qualname) -> info ----
+        for file_path, info in self._file_info.items():
+            for qualname, func_node, clsname, nodes in info["scopes"]:
+                if not qualname:
+                    continue
+                args = func_node.args
+                pos = [a.arg for a in list(args.posonlyargs) + list(args.args)]
+                self._func_index[(info["module"], qualname)] = {
+                    "file": file_path,
+                    "key": info["key"],
+                    "module": info["module"],
+                    "qualname": qualname,
+                    "class": clsname,
+                    "node": func_node,
+                    "params": pos,
+                    "kwonly": {a.arg for a in args.kwonlyargs},
+                    "prefix": self._make_prefix(info["key"], qualname),
+                }
+
+    def _module_path_of(self, file_path: str, root: str) -> str:
+        """文件路径 → 项目内模块路径（如 store/services/catalog.py → store.services.catalog）。"""
         try:
-            tree = ast.parse(source_code, filename=file_path)
-        except SyntaxError:
-            return []  # 语法错误，跳过
+            rel = os.path.relpath(file_path, root)
+        except ValueError:
+            rel = os.path.basename(file_path)
+        parts = rel.replace("\\", "/").split("/")
+        if parts[-1] == "__init__.py":
+            parts = parts[:-1]
+        else:
+            parts[-1] = parts[-1][:-3] if parts[-1].endswith(".py") else parts[-1]
+        return ".".join(p for p in parts if p and p not in (".", ".."))
 
-        # ---- 2. 建立父节点引用 ----
-        # 为每个 AST 节点注入 _parent 属性，
-        # 用于后续判断赋值目标（如 node 在 Assign 的 targets 中）
-        for node in ast.walk(tree):
-            for child in ast.iter_child_nodes(node):
-                child._parent = node  # type: ignore
-
-        # ---- 3. 解析 import 语句，建立别名表 ----
-        # 映射：代码中的局部名 → 全限定模块名
-        # 例如：request → flask.request
-        import_aliases: dict[str, str] = {}
+    def _build_aliases(self, tree: ast.AST, module: str, info: dict) -> None:
+        """解析 import，建立两张表：
+        - aliases:    局部名 → 全限定名（source/sink 匹配用）
+        - alias_mod:  局部名 → (模块, 属性名或 None)（跨文件调用解析用）
+        """
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                # import os → {"os": "os"}
-                # import numpy as np → {"np": "numpy"}
                 for alias in node.names:
-                    name = alias.asname or alias.name
-                    import_aliases[name] = alias.name
+                    name = alias.asname or alias.name.split(".")[0]
+                    info["aliases"][name] = alias.name
+                    info["alias_mod"][name] = (alias.name, None)
             elif isinstance(node, ast.ImportFrom):
-                # from flask import request → {"request": "flask.request"}
-                module = node.module or ""
+                base = self._resolve_import_module(node, module)
                 for alias in node.names:
                     name = alias.asname or alias.name
-                    import_aliases[name] = f"{module}.{alias.name}"
+                    if alias.name == "*":
+                        continue
+                    info["aliases"][name] = f"{base}.{alias.name}" if base else alias.name
+                    info["alias_mod"][name] = (base, alias.name)
 
-        # ---- 3.5 构建局部类型推断表（数据库连接/游标） ----
-        self._local_types = self._build_local_types(tree, import_aliases)
+    def _resolve_import_module(self, node: ast.ImportFrom, current_module: str) -> str:
+        """相对导入解析：from . import x / from ..sub import y。"""
+        level = node.level or 0
+        if level == 0:
+            return node.module or ""
+        parts = current_module.split(".") if current_module else []
+        # 每多一个点，向上退一层包
+        keep = max(0, len(parts) - (level - 1))
+        base_parts = parts[:keep]
+        if node.module:
+            base_parts = base_parts + node.module.split(".")
+        return ".".join(base_parts)
 
-        # ---- 4. 创建污点追踪器 ----
-        tracker = TaintTracker(file_path=file_path)
+    def _nodes_pruned(self, root: ast.AST, include_self: bool = False) -> list:
+        """收集某个作用域内的全部节点；剪掉函数定义（嵌套函数属自己的作用域）。"""
+        out: list = []
 
-        # ---- 5. 第一阶段：收集 Source / Sink / 赋值关系 ----
-        self._visit_sources(tree, tracker, source_code, import_aliases)
-        self._visit_param_sources(tree, tracker, source_code)
-        self._visit_sinks(tree, tracker, source_code, import_aliases)
-        self._visit_assignments(tree, tracker, source_code, import_aliases)
+        def rec(node):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node is root and include_self:
+                    out.append(node)
+                    for child in ast.iter_child_nodes(node):
+                        rec(child)
+                return
+            out.append(node)
+            for child in ast.iter_child_nodes(node):
+                rec(child)
 
-        # ---- 6. 第二阶段：执行污点分析 ----
-        raw_results = tracker.analyze()
+        if isinstance(root, ast.Module):
+            for stmt in root.body:
+                rec(stmt)
+        else:
+            rec(root)
+        return out
 
-        # ---- 7. 第三阶段：格式化输出 ----
-        return self._format_results(raw_results, source_code, file_path)
+    def _iter_functions(self, tree: ast.AST):
+        """遍历所有函数定义（含类方法、嵌套函数）。"""
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                yield node
+
+    def _func_qualname(self, func_node: ast.AST) -> tuple[str, str]:
+        """计算函数的限定名和所属类名（如 Class.method / outer.inner）。"""
+        names: list[str] = []
+        clsname = ""
+        node = func_node
+        seen = 0
+        while node is not None and seen < 50:
+            parent = getattr(node, "_parent", None)
+            if parent is None:
+                break
+            if isinstance(parent, ast.ClassDef):
+                names.append(parent.name)
+                if not clsname:
+                    clsname = parent.name
+            elif isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names.append(parent.name)
+            node = parent
+            seen += 1
+        names.append(func_node.name)
+        return ".".join(reversed(names)), clsname
+
+    def _make_prefix(self, file_key: str, qualname: str) -> str:
+        """作用域前缀：file_key@qualname:（模块级 qualname 为空）。"""
+        return f"{file_key}@{qualname}:"
+
+    def _v(self, name: str) -> str:
+        """变量名加作用域前缀；已带前缀的名字（匿名名）保持不动。"""
+        if not name:
+            return name
+        if self._prefix and name.startswith(self._prefix):
+            return name
+        if name.startswith("__anon_"):
+            return name
+        return f"{self._prefix}{name}"
 
     # ========================================================================
     # Source 点扫描
     # ========================================================================
 
-    def _visit_sources(self, tree: ast.AST, tracker: TaintTracker,
+    def _visit_sources(self, nodes: list, tracker: TaintTracker,
                        source_code: str, aliases: dict[str, str]):
         """
-        遍历 AST 找出所有 Source 点（用户输入入口）。
+        在当前作用域节点中找出所有 Source 点（用户输入入口）。
 
         对每个函数调用（或 dict 下标访问）检查是否匹配已知的 Source 函数，
         匹配成功则标记被赋值的变量为污点源。
         """
-        for node in ast.walk(tree):
+        for node in nodes:
             # ---- dict 下标访问：request.args['name'] / request.GET['id'] ----
             if isinstance(node, ast.Subscript):
                 chain = self._resolve_attr_chain(node.value, aliases)
                 key = f"{chain}.__getitem__"
                 if key in self.source_map or chain in self.source_map:
                     src_key = key if key in self.source_map else chain
-                    var_name = self._make_var_name(node)  # 确定性匿名名，与 _extract_names 一致
+                    var_name = self._make_var_name(node)  # 确定性匿名名（带前缀）
                     code = ast.get_source_segment(source_code, node) or ""
                     tracker.mark_source(
                         var_name,
                         source_func=src_key,
                         code=code,
                         line=node.lineno,
+                        file=self._current_file,
                     )
                 continue
 
             # ---- 属性型 source：request.data / request.headers / sys.argv ----
             if isinstance(node, ast.Attribute):
                 chain = self._resolve_attr_chain(node, aliases)
+                matched = None
                 if chain in self.source_map:
-                    var_name = self._make_var_name(node)  # 确定性匿名名
+                    matched = chain
+                else:
+                    # 后缀匹配：api.payload / parser.parse_args 这类实例变量写法
+                    for suffix in sorted(self.source_map.keys(), key=len,
+                                         reverse=True):
+                        if chain.endswith(suffix):
+                            matched = suffix
+                            break
+                if matched:
+                    var_name = self._make_var_name(node)  # 确定性匿名名（带前缀）
                     code = ast.get_source_segment(source_code, node) or ""
                     tracker.mark_source(
                         var_name,
-                        source_func=chain,
+                        source_func=matched,
                         code=code,
                         line=node.lineno,
+                        file=self._current_file,
                     )
                 continue
 
@@ -302,7 +540,7 @@ class PythonScanner:
                 continue
 
             # 确定这个调用的结果赋给了哪个变量
-            var_name = self._get_assigned_var(node)
+            var_name = self._v(self._get_assigned_var(node))
             code = ast.get_source_segment(source_code, node) or ""
 
             # 标记为污点源
@@ -311,6 +549,7 @@ class PythonScanner:
                 source_func=match,
                 code=code,
                 line=node.lineno,
+                file=self._current_file,
             )
 
     def _match_source(self, node: ast.Call, aliases: dict[str, str]) -> str | None:
@@ -341,7 +580,7 @@ class PythonScanner:
 
         return None
 
-    def _visit_param_sources(self, tree: ast.AST, tracker: TaintTracker,
+    def _visit_param_sources(self, func_node, tracker: TaintTracker,
                              source_code: str):
         """
         函数参数作为不可信来源（保守假设，PySa 风格）。
@@ -354,31 +593,32 @@ class PythonScanner:
         self / cls 除外：面向对象方法的自身引用，若被打上污点会导致
         所有 self.xxx 全部污染，误报爆炸。
         """
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                     ast.Lambda)):
+        if func_node is None:
+            return
+        args = func_node.args
+        for arg in (list(args.posonlyargs) + list(args.args)
+                    + list(args.kwonlyargs)):
+            if arg.arg in ("self", "cls"):
                 continue
-            args = node.args
-            for arg in (list(args.posonlyargs) + list(args.args)
-                        + list(args.kwonlyargs)):
-                if arg.arg in ("self", "cls"):
-                    continue
-                tracker.mark_source(
-                    arg.arg,
-                    source_func="function.parameter",
-                    code=arg.arg,
-                    line=node.lineno,
-                )
-            if args.vararg and args.vararg.arg not in ("self", "cls"):
-                tracker.mark_source(
-                    args.vararg.arg, source_func="function.parameter",
-                    code=args.vararg.arg, line=node.lineno,
-                )
-            if args.kwarg and args.kwarg.arg not in ("self", "cls"):
-                tracker.mark_source(
-                    args.kwarg.arg, source_func="function.parameter",
-                    code=args.kwarg.arg, line=node.lineno,
-                )
+            tracker.mark_source(
+                self._v(arg.arg),
+                source_func="function.parameter",
+                code=arg.arg,
+                line=func_node.lineno,
+                file=self._current_file,
+            )
+        if args.vararg and args.vararg.arg not in ("self", "cls"):
+            tracker.mark_source(
+                self._v(args.vararg.arg), source_func="function.parameter",
+                code=args.vararg.arg, line=func_node.lineno,
+                file=self._current_file,
+            )
+        if args.kwarg and args.kwarg.arg not in ("self", "cls"):
+            tracker.mark_source(
+                self._v(args.kwarg.arg), source_func="function.parameter",
+                code=args.kwarg.arg, line=func_node.lineno,
+                file=self._current_file,
+            )
 
     # ========================================================================
     # Sink 点扫描
@@ -391,10 +631,10 @@ class PythonScanner:
         "db", "database", "con",
     }
 
-    def _visit_sinks(self, tree: ast.AST, tracker: TaintTracker,
+    def _visit_sinks(self, nodes: list, tracker: TaintTracker,
                      source_code: str, aliases: dict[str, str]):
         """
-        遍历 AST 找出所有 Sink 点（危险函数调用）。
+        在当前作用域节点中找出所有 Sink 点（危险函数调用）。
 
         匹配策略：
           1. exact（import别名解析后全名）
@@ -404,7 +644,7 @@ class PythonScanner:
           4. 后缀回退：数据库命名变量（cursor/conn/db 等）上的 execute 系列、
              session.execute、objects.raw
         """
-        for node in ast.walk(tree):
+        for node in nodes:
             if not isinstance(node, ast.Call):
                 continue
 
@@ -547,21 +787,22 @@ class PythonScanner:
 
         for var in arg_vars:
             tracker.mark_sink(
-                var,
+                self._v(var),
                 sink_func=f"{sk['module']}.{sk['func']}",  # Sink 函数的全限定名
                 vuln_type=vuln_type,
                 code=code,
                 line=node.lineno,
+                file=self._current_file,
             )
 
     # ========================================================================
     # 赋值关系扫描
     # ========================================================================
 
-    def _visit_assignments(self, tree: ast.AST, tracker: TaintTracker,
+    def _visit_assignments(self, nodes: list, tracker: TaintTracker,
                            source_code: str, aliases: dict[str, str] | None = None):
         """
-        遍历 AST 收集所有赋值关系（变量传播）。
+        在当前作用域节点中收集所有赋值关系（变量传播）。
 
         处理三种赋值形式：
           1. 普通赋值：  x = y         → mark_assign("x", "y")
@@ -571,18 +812,34 @@ class PythonScanner:
         另做属性读取传播：obj.attr —— obj 污染则 obj.attr 也污染。
         例如 order = Order.query.get_or_404(order_id)，order 被污染后
         order.notes 也应视为污点，流向 render_template_string 即 SSTI。
+        若 obj 是模块别名（import db; c = db.c），则链接到该模块的顶层变量。
         """
+        info = self._file_info.get(self._current_file, {})
         # ---- 属性读取传播：obj.attr ← obj ----
-        for node in ast.walk(tree):
+        for node in nodes:
             if isinstance(node, ast.Attribute):
                 base = self._name_of(node.value)
-                if base:
-                    code = ast.get_source_segment(source_code, node) or ""
-                    tracker.mark_assign(self._make_var_name(node), base,
-                                        reason="attr_read", code=code,
-                                        line=node.lineno)
+                if not base:
+                    continue
+                anon = self._make_var_name(node)
+                code = ast.get_source_segment(source_code, node) or ""
+                tracker.mark_assign(anon, self._v(base),
+                                    reason="attr_read", code=code,
+                                    line=node.lineno)
+                # ---- 跨文件模块属性链接：import db; c = db.c ----
+                entry = info.get("alias_mod", {}).get(base)
+                if entry and entry[1] is None:
+                    mod = entry[0]
+                    tgt_path = self._module_files.get(mod)
+                    if tgt_path and tgt_path != self._current_file:
+                        tgt_info = self._file_info.get(tgt_path, {})
+                        if node.attr in tgt_info.get("module_vars", set()):
+                            tgt_name = f"{self._make_prefix(tgt_info.get('key', mod), '')}{node.attr}"
+                            tracker.mark_assign(anon, tgt_name,
+                                                reason="module_attr",
+                                                code=code, line=node.lineno)
 
-        for node in ast.walk(tree):
+        for node in nodes:
             # ---- 普通赋值：x = expr ----
             if isinstance(node, ast.Assign):
                 targets = self._extract_target_names(node.targets)  # 赋值目标变量名
@@ -590,7 +847,8 @@ class PythonScanner:
                 for target in targets:
                     for val in value_vars:
                         code = ast.get_source_segment(source_code, node) or ""
-                        tracker.mark_assign(target, val, reason="assignment",
+                        tracker.mark_assign(self._v(target), self._v(val),
+                                            reason="assignment",
                                             code=code, line=node.lineno)
                 # dict 访问传播：x = d['k'] / x = d.get('k')
                 # 若 d 已被污染，则 x 也污染（字典/对象取值传播）
@@ -598,7 +856,8 @@ class PythonScanner:
                 if base_var:
                     for target in targets:
                         code = ast.get_source_segment(source_code, node) or ""
-                        tracker.mark_assign(target, base_var, reason="dict_access",
+                        tracker.mark_assign(self._v(target), self._v(base_var),
+                                            reason="dict_access",
                                             code=code, line=node.lineno)
                 # 消毒函数检测：x = int(y), x = html.escape(y) 等
                 self._check_sanitizer(node.value, targets, tracker, aliases or {})
@@ -610,7 +869,8 @@ class PythonScanner:
                 if target_name:
                     for val in value_vars:
                         code = ast.get_source_segment(source_code, node) or ""
-                        tracker.mark_assign(target_name, val, reason="aug_assign",
+                        tracker.mark_assign(self._v(target_name), self._v(val),
+                                            reason="aug_assign",
                                             code=code, line=node.lineno)
                     self._check_sanitizer(node.value, [target_name], tracker, aliases or {})
 
@@ -621,7 +881,7 @@ class PythonScanner:
                 if target_name:
                     for val in value_vars:
                         code = ast.get_source_segment(source_code, node) or ""
-                        tracker.mark_assign(target_name, val,
+                        tracker.mark_assign(self._v(target_name), self._v(val),
                                             reason="ann_assign",
                                             code=code, line=node.lineno)
                     self._check_sanitizer(node.value, [target_name], tracker, aliases or {})
@@ -647,7 +907,7 @@ class PythonScanner:
         if key in PYTHON_SANITIZER_NAMES:
             vuln_types = PYTHON_SANITIZER_NAMES[key]
             for target in targets:
-                tracker.sanitize(target, key, vuln_types=vuln_types)
+                tracker.sanitize(self._v(target), key, vuln_types=vuln_types)
 
     def _dict_access_base(self, value_node: ast.expr) -> str:
         """
@@ -664,6 +924,116 @@ class PythonScanner:
             if isinstance(func, ast.Attribute) and func.attr == "get":
                 return self._name_of(func.value) or ""
         return ""
+
+    # ========================================================================
+    # 返回值传播 + 调用点链接（跨函数/跨文件）
+    # ========================================================================
+
+    def _visit_returns(self, nodes: list, tracker: TaintTracker,
+                       source_code: str):
+        """return expr → 函数返回值节点 #ret（跨函数污点流的出口）。"""
+        ret_var = f"{self._prefix}#ret"
+        for node in nodes:
+            if isinstance(node, ast.Return) and node.value:
+                for name in self._extract_names(node.value):
+                    code = ast.get_source_segment(source_code, node) or ""
+                    tracker.mark_assign(ret_var, self._v(name), reason="return",
+                                        code=code, line=node.lineno)
+
+    def _resolve_project_target(self, node: ast.Call, info: dict) -> dict | None:
+        """
+        把调用点解析到项目内函数（跨文件）。
+
+        支持：
+          - f(...)                    本文件函数 / from x import f
+          - obj.m(...)                self.m() / Class.m() / 模块别名.m()
+        解析失败（外部库、实例变量等）返回 None。
+        """
+        func = node.func
+        if isinstance(func, ast.Name):
+            name = func.id
+            if (info["module"], name) in self._func_index:
+                return self._func_index[(info["module"], name)]
+            entry = info["alias_mod"].get(name)
+            if entry:
+                mod, attr = entry
+                if attr:
+                    if (mod, attr) in self._func_index:
+                        return self._func_index[(mod, attr)]
+                else:
+                    if (mod, name) in self._func_index:
+                        return self._func_index[(mod, name)]
+            return None
+        if isinstance(func, ast.Attribute):
+            m = func.attr
+            base = func.value
+            if isinstance(base, ast.Name):
+                b = base.id
+                if b in ("self", "cls") and self._current_class:
+                    key = (info["module"], f"{self._current_class}.{m}")
+                    if key in self._func_index:
+                        return self._func_index[key]
+                if b in info.get("classes", set()):
+                    key = (info["module"], f"{b}.{m}")
+                    if key in self._func_index:
+                        return self._func_index[key]
+                entry = info["alias_mod"].get(b)
+                if entry:
+                    mod, attr = entry
+                    if attr:
+                        key = (mod, f"{attr}.{m}")
+                        if key in self._func_index:
+                            return self._func_index[key]
+                    else:
+                        key = (mod, m)
+                        if key in self._func_index:
+                            return self._func_index[key]
+            return None
+        return None
+
+    def _link_calls(self, nodes: list, tracker: TaintTracker, info: dict):
+        """
+        调用点链接：实参 → 形参、被调函数返回值 → 调用点变量。
+
+        由于形参本身已按不可信 source 处理，这条链路主要用于：
+          1. 把调用方实参的污点沿"形参 → 函数内传播"路径展示出来；
+          2. 把被调函数的 return 值污点带回调用方（x = f(...) 后 x 污染）。
+        """
+        for node in nodes:
+            if not isinstance(node, ast.Call):
+                continue
+            target = self._resolve_project_target(node, info)
+            if not target:
+                continue
+            callee_prefix = target["prefix"]
+            params = target["params"]
+            # ---- 实参 → 形参 ----
+            for i, arg_node in enumerate(node.args):
+                if i >= len(params):
+                    break
+                for name in self._extract_names(arg_node):
+                    tracker.mark_assign(f"{callee_prefix}{params[i]}",
+                                        self._v(name), reason="call_arg",
+                                        code=ast.get_source_segment(
+                                            info["source"], node) or "",
+                                        line=node.lineno)
+            for kw in node.keywords:
+                if kw.arg and kw.arg in target["kwonly"]:
+                    for name in self._extract_names(kw.value):
+                        tracker.mark_assign(f"{callee_prefix}{kw.arg}",
+                                            self._v(name), reason="call_kwarg",
+                                            code=ast.get_source_segment(
+                                                info["source"], node) or "",
+                                            line=node.lineno)
+            # ---- 返回值 → 调用结果 ----
+            ret_node = f"{callee_prefix}#ret"
+            assigned = self._get_assigned_var(node)
+            if assigned:
+                tracker.mark_assign(self._v(assigned), ret_node,
+                                    reason="call_ret",
+                                    code=ast.get_source_segment(
+                                        info["source"], node) or "",
+                                    line=node.lineno)
 
     # ========================================================================
     # 名称解析器（应用 import 别名）
@@ -824,10 +1194,10 @@ class PythonScanner:
         """
         生成匿名变量名，用于无法确定变量名的表达式。
 
-        格式: __anon_{AST类型}_{内存ID}
-        保证唯一性，但可读性差（仅用于内部追踪）。
+        格式: {作用域前缀}__anon_{AST类型}_{内存ID}
+        保证唯一性，且与作用域绑定（跨函数不串扰）。
         """
-        return f"__anon_{type(node).__name__}_{id(node)}"
+        return f"{self._prefix}__anon_{type(node).__name__}_{id(node)}"
 
     def _extract_target_names(self, targets: list[ast.expr]) -> list[str]:
         """
@@ -978,7 +1348,7 @@ class PythonScanner:
                 cwe = "CWE-94"
 
             results.append({
-                "file_path": file_path,
+                "file_path": r.get("file") or file_path,
                 "line_number": r.get("sink_line", r.get("source_line", 0)),  # 优先使用 Sink 行号
                 "vuln_type": vt,
                 "severity": severity,
@@ -991,5 +1361,6 @@ class PythonScanner:
                 "sink_func": sink_func,                       # Sink 函数名
                 "source_line": r.get("source_line", 0),      # Source 行号
                 "sink_line": r.get("sink_line", 0),          # Sink 行号
+                "source_file": r.get("source_file", ""),     # 跨文件时的 source 文件
             })
         return results

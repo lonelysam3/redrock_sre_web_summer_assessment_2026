@@ -323,7 +323,7 @@ class AnalysisPipeline:
         # 根据语言选择扫描器
         if language == "python":
             scanner = PythonScanner()
-            all_vulns = scanner.scan_directory(project_path)
+            all_vulns = scanner.scan_project(source_code_map)  # 项目级跨函数/跨文件分析
         elif language in ("c", "cpp"):
             try:
                 scanner = CScanner()

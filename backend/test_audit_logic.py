@@ -179,3 +179,56 @@ def main():
     print(cfg)
 """
 }, "python")
+
+# ---- 跨函数/跨文件污点传播（v3 架构） ----
+
+# T11: 跨文件返回传播：b.go(host) → a.build_url(host) → #ret → requests.get(u) → SSRF
+run_case("T11 跨文件返回传播", {
+    "a.py": "def build_url(host):\n    return 'http://' + host\n",
+    "b.py": """from a import build_url
+import requests
+
+def go(host):
+    u = build_url(host)
+    requests.get(u)
+"""
+}, "python")
+
+# T12: 同一文件内函数作用域隔离：同名变量不应跨函数串扰
+# checkout 里的 order（嵌套 request.form.get 污染）不应污染 order_receipt 里的
+# page 链路；但 order_receipt 自己的 order_id → order → order.notes → page →
+# render_template_string 应报 SSTI。
+run_case("T12 作用域隔离 + 二次传播 SSTI", {
+    "s.py": """from flask import render_template_string, request
+
+class Order:
+    notes = ""
+
+class Q:
+    @staticmethod
+    def get_or_404(x):
+        o = Order()
+        o.notes = "hello"
+        return o
+
+class OrderQuery:
+    query = Q()
+
+Order = type('OrderCls', (Order,), {'query': Q()})
+
+def checkout():
+    order = _mk(request.form.get("notes", ""))
+    return order
+
+def _mk(notes):
+    o = Order()
+    o.notes = notes
+    return o
+
+def order_receipt(order_id):
+    order = Order.query.get_or_404(order_id)
+    page = "<p>" + order.notes + "</p>"
+    return render_template_string(page, order=order)
+"""
+}, "python")
+

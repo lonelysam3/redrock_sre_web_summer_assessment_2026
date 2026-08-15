@@ -232,7 +232,7 @@ class TaintTracker:
         self.sink_info: dict[str, dict] = {}               # Sink 节点详细信息 {var_name: {sink_func, vuln_type, code, line}}
 
     def mark_source(self, var_name: str, source_func: str = "",
-                    code: str = "", line: int = 0):
+                    code: str = "", line: int = 0, file: str = ""):
         """
         标记一个变量为污点源（用户输入入口）。
 
@@ -243,6 +243,7 @@ class TaintTracker:
             source_func: Source 函数全名（如 "flask.request.args.get"）
             code:        对应的源代码片段
             line:        所在行号
+            file:        所在文件（跨文件项目级分析时用于溯源）
         """
         node = TaintNode(
             name=var_name,
@@ -257,10 +258,12 @@ class TaintTracker:
             "source_func": source_func,
             "code": code,
             "line": line,
+            "file": file,
         }
 
     def mark_sink(self, var_name: str, sink_func: str = "",
-                  vuln_type: str = "", code: str = "", line: int = 0):
+                  vuln_type: str = "", code: str = "", line: int = 0,
+                  file: str = ""):
         """
         标记一个变量传入了危险函数（Sink 点）。
 
@@ -270,6 +273,7 @@ class TaintTracker:
             vuln_type: 漏洞类型字符串
             code:      对应的源代码片段
             line:      所在行号
+            file:      所在文件（跨文件项目级分析时用于定位）
         """
         # 如果变量尚未在图中，先创建节点
         if var_name not in self.graph.nodes:
@@ -280,6 +284,7 @@ class TaintTracker:
             "vuln_type": vuln_type,
             "code": code,
             "line": line,
+            "file": file,
         }
 
     def mark_assign(self, to_var: str, from_var: str, reason: str = "assignment",
@@ -415,32 +420,51 @@ class TaintTracker:
 
         # ---- 污点传播（沿边 BFS）----
         # 边创建顺序不应影响结果：从每个 source 出发，沿邻接表传播 tainted 标记。
-        # 已被全类型消毒的节点（sanitized_types 含 "all"）不参与传播，保持切断。
+        # 注意：不能用 tainted 标志本身当访问集——eager 传播（mark_assign 时
+        # 已标 tainted）的节点仍需继续向下展开。已被全类型消毒的节点
+        # （sanitized_types 含 "all"）不参与传播，保持切断。
         spread_queue = deque(sources)
+        spread_visited = set(sources)
         while spread_queue:
             cur = spread_queue.popleft()
             for nxt in self.graph.adjacency.get(cur, []):
                 nxt_node = self.graph.nodes.get(nxt)
-                if not nxt_node or nxt_node.tainted:
+                if not nxt_node:
                     continue
                 if "all" in nxt_node.sanitized_types:
                     continue
                 nxt_node.tainted = True
-                spread_queue.append(nxt)
+                if nxt not in spread_visited:
+                    spread_visited.add(nxt)
+                    spread_queue.append(nxt)
 
-        # 消毒函数集合：如果路径中经过这些函数，则认为数据已被清洗
-        visited_pairs = set()  # 避免重复处理相同的 (source, sink) 对
+        sink_set = set(sinks)
+
+        def bfs_from_source(source: str):
+            """从单个 source 出发 BFS，返回 {sink: 第一条有效路径}。
+            每个 source 只遍历一次图，避免 source×sink 两两 BFS 的爆炸。"""
+            found: dict[str, list[str]] = {}
+            queue = deque([[source]])
+            visited = {source}
+            max_depth = 20
+            while queue:
+                path = queue.popleft()
+                if len(path) > max_depth:
+                    continue
+                cur = path[-1]
+                if cur in sink_set and cur not in found:
+                    found[cur] = path
+                for nxt in self.graph.adjacency.get(cur, []):
+                    if nxt in visited:
+                        continue
+                    visited.add(nxt)
+                    queue.append(path + [nxt])
+            return found
 
         for source in sources:
-            source_node = self.graph.nodes[source]   # Source 节点对象
-            for sink in sinks:
+            found = bfs_from_source(source)
+            for sink, path in found.items():
                 sink_node = self.graph.nodes[sink]   # Sink 节点对象
-                pair = (source, sink)
-
-                # 跳过已处理的 source-sink 对
-                if pair in visited_pairs:
-                    continue
-                visited_pairs.add(pair)
 
                 # 关键检查 1：Sink 变量是否被全类型消毒
                 if not sink_node.tainted:
@@ -451,43 +475,33 @@ class TaintTracker:
                 if ski.get("vuln_type", "") in sink_node.sanitized_types:
                     continue
 
-                # 用 BFS 找出所有从 source 到 sink 的路径
-                paths = self.graph.find_paths(source, sink)
-                if not paths:
-                    continue  # 没有路径，不是漏洞
+                # 关键检查 3：路径上是否有节点被全类型消毒
+                if any(
+                    self.graph.nodes.get(n) and not self.graph.nodes[n].tainted
+                    for n in path
+                ):
+                    continue
 
-                # 检查每条路径上的节点是否全都保持污染状态
-                # 注意：只检查"全类型消毒"（tainted=False）的节点；
-                # 按类型消毒的节点（sanitized_types 非空）由 Sink 处检查。
-                for path in paths:
-                    # 如果路径上有任何节点的 tainted 被清除（经过了消毒），跳过此路径
-                    if any(
-                        self.graph.nodes.get(n) and not self.graph.nodes[n].tainted
-                        for n in path
-                    ):
-                        continue
+                # 收集 source 和 sink 的详细信息
+                si = self.source_info.get(source, {})
 
-                    # 收集 source 和 sink 的详细信息
-                    si = self.source_info.get(source, {})
-                    ski = self.sink_info.get(sink, {})
-
-                    # 构造漏洞报告
-                    results.append({
-                        "source_var": source,
-                        "sink_var": sink,
-                        "source_func": si.get("source_func", ""),
-                        "sink_func": ski.get("sink_func", ""),
-                        "vuln_type": ski.get("vuln_type", ""),
-                        "source_code": si.get("code", ""),
-                        "sink_code": ski.get("code", ""),
-                        # 数据流路径：用箭头连接各变量
-                        "data_flow": " → ".join(path),
-                        "source_line": si.get("line", 0),
-                        "sink_line": ski.get("line", 0),
-                        "path": path,
-                        "file": self.file_path,
-                    })
-                    break  # 一个 source-sink 对只报告一次（取第一条有效路径）
+                # 构造漏洞报告
+                results.append({
+                    "source_var": source,
+                    "sink_var": sink,
+                    "source_func": si.get("source_func", ""),
+                    "sink_func": ski.get("sink_func", ""),
+                    "vuln_type": ski.get("vuln_type", ""),
+                    "source_code": si.get("code", ""),
+                    "sink_code": ski.get("code", ""),
+                    # 数据流路径：用箭头连接各变量
+                    "data_flow": " → ".join(path),
+                    "source_line": si.get("line", 0),
+                    "sink_line": ski.get("line", 0),
+                    "path": path,
+                    "file": ski.get("file") or self.file_path,
+                    "source_file": si.get("file", ""),
+                })
 
         return results
 

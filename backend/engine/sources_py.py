@@ -53,10 +53,15 @@ PYTHON_SOURCES: list[Source] = [
     Source("flask.request.headers", "get", "Flask 请求头", tainted_params=[]),
     Source("flask.request.headers", "__getitem__", "Flask 请求头 dict 取值", tainted_params=[]),
     Source("flask.request", "data", "Flask 原始请求体"),                               # request.data
+    Source("flask.request", "json", "Flask JSON body（属性直读）"),                     # data = request.json
     Source("flask.request", "get_json", "Flask JSON body", tainted_params=[]),           # request.get_json()
     Source("flask.request", "get_data", "Flask 原始请求体", tainted_params=[]),          # request.get_data()
     Source("flask.request", "headers", "Flask 请求头"),                                # request.headers
     Source("flask.request", "cookies", "Flask Cookies"),                               # request.cookies
+
+    # ============ Flask-RESTX / Flask-RESTful ============
+    Source("flask_restful.api", "payload", "Flask-RESTX api.payload"),                  # data = api.payload
+    Source("flask_restful.parser", "parse_args", "Flask-RESTX 参数解析", tainted_params=[]),  # args = parser.parse_args()
 
     # ============ Django 框架 ============
     Source("django.http.request", "GET", "Django GET 参数"),
