@@ -777,6 +777,19 @@ class AIClient:
         if fixed:
             return fixed
 
+        # 调试：保存解析失败的原始返回，便于定位模型输出格式问题
+        try:
+            import os as _os
+            dbg_dir = _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                "ai_parse_failures")
+            _os.makedirs(dbg_dir, exist_ok=True)
+            with open(_os.path.join(dbg_dir, "latest.txt"), "w",
+                      encoding="utf-8") as _f:
+                _f.write(text)
+        except Exception:
+            pass
+
         print(f"[WARN] 无法解析 AI 返回: {text[:200]}...")
         return None
 
@@ -785,23 +798,122 @@ class AIClient:
         """尝试修复 AI 返回的格式有问题的 JSON"""
         if not text:
             return None
-        repaired = text
+        repaired = text.strip()
         # 0. 剥离 ``` 代码块标记（AI 常用外层包裹）
-        repaired = re.sub(r'^```\w*\s*', '', repaired.strip())
+        repaired = re.sub(r'^```\w*\s*', '', repaired)
         repaired = re.sub(r'\s*```\s*$', '', repaired)
-        # 1. 移除尾部逗号（JSON 不允许 trailing comma）
-        repaired = re.sub(r',\s*}', '}', repaired)
-        repaired = re.sub(r',\s*]', ']', repaired)
-        # 2. 移除单行注释 // ... 到行尾
-        repaired = re.sub(r'//[^\n]*', '', repaired)
-        # 3. 移除多行注释 /* ... */
-        repaired = re.sub(r'/\*[\s\S]*?\*/', '', repaired)
-        # 4. 修复截断的 JSON：自动闭合未匹配的括号
+        # 1. 单遍状态机修复：
+        #    - 字符串内的裸控制字符（换行/制表符等）转义为 \n/\t
+        #    - 字符串外的注释、尾逗号、markdown 星号、全角引号、未引号键
+        repaired = AIClient._sanitize_json_text(repaired)
+        # 2. 修复截断的 JSON：自动闭合未匹配的括号
         repaired = AIClient._close_truncated_json(repaired)
         try:
             return json.loads(repaired)
         except (json.JSONDecodeError, ValueError):
             return None
+
+    @staticmethod
+    def _sanitize_json_text(text: str) -> str:
+        """
+        修复 LLM 生成 JSON 的常见问题（单遍状态机，不破坏字符串内容）：
+
+        字符串内：裸换行/制表符/控制字符 → 转义；\r 丢弃。
+        字符串外：// 与 /* */ 注释剔除；尾逗号剔除；markdown ** 剔除；
+                   全角引号 “”‘’ → 半角；{key: ...} 未引号键补引号。
+        """
+        out: list[str] = []
+        i = 0
+        n = len(text)
+        in_string = False
+        escape_next = False
+        while i < n:
+            ch = text[i]
+            if in_string:
+                if escape_next:
+                    out.append(ch)
+                    escape_next = False
+                elif ch == '\\':
+                    out.append(ch)
+                    escape_next = True
+                elif ch == '"':
+                    out.append(ch)
+                    in_string = False
+                elif ch == '\n':
+                    out.append('\\n')
+                elif ch == '\r':
+                    pass  # 丢弃裸回车
+                elif ch == '\t':
+                    out.append('\\t')
+                elif ord(ch) < 0x20:
+                    out.append('\\u%04x' % ord(ch))
+                else:
+                    out.append(ch)
+            else:
+                if ch == '"':
+                    in_string = True
+                    out.append(ch)
+                elif ch in ('\u201c', '\u201d'):   # “ ”
+                    out.append('"')
+                elif ch in ('\u2018', '\u2019'):   # ‘ ’
+                    out.append("'")
+                elif ch == '/' and i + 1 < n and text[i + 1] == '/':
+                    # 行注释：跳到行尾
+                    while i < n and text[i] != '\n':
+                        i += 1
+                    continue
+                elif ch == '/' and i + 1 < n and text[i + 1] == '*':
+                    # 块注释
+                    i += 2
+                    while i + 1 < n and not (text[i] == '*' and text[i + 1] == '/'):
+                        i += 1
+                    i += 2
+                    continue
+                elif ch == '{':
+                    out.append(ch)
+                    # 未引号键探测：{key: ...
+                    j = i + 1
+                    while j < n and text[j] in ' \t\r\n':
+                        j += 1
+                    k = j
+                    while k < n and (text[k].isalnum() or text[k] in '_-'):
+                        k += 1
+                    if k > j and k < n and text[k] == ':':
+                        out.append(text[i + 1:j])
+                        out.append('"')
+                        out.append(text[j:k])
+                        out.append('"')
+                        out.append(':')
+                        i = k   # 底部 i+=1 后指向 ':' 之后
+                elif ch == ',':
+                    # 尾逗号：后面（除空白外）是 } 或 ] 则丢弃
+                    j = i + 1
+                    while j < n and text[j] in ' \t\r\n':
+                        j += 1
+                    if j < n and text[j] in '}]':
+                        i += 1
+                        continue
+                    # 未引号键探测：,key: ...
+                    k = j
+                    while k < n and (text[k].isalnum() or text[k] in '_-'):
+                        k += 1
+                    if k > j and k < n and text[k] == ':':
+                        out.append(ch)
+                        out.append(text[i + 1:j])
+                        out.append('"')
+                        out.append(text[j:k])
+                        out.append('"')
+                        out.append(':')
+                        i = k
+                    else:
+                        out.append(ch)
+                elif ch == '*':
+                    # markdown 加粗 **：JSON 字符串外不应出现裸 *
+                    pass
+                else:
+                    out.append(ch)
+            i += 1
+        return ''.join(out)
 
     @staticmethod
     def _close_truncated_json(text: str) -> str:

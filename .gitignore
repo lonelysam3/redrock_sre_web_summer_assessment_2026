@@ -42,3 +42,6 @@ Thumbs.db
 
 # Environment
 .env
+
+# AI 解析失败样本（调试用）
+backend/ai_parse_failures/
