@@ -1046,13 +1046,16 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log,
             if report.result == VerificationResult.CONFIRMED:
                 v.status = "confirmed"
                 v.ai_payload_result = "success"
+                v.ai_is_vulnerable = "true"      # 确认漏洞
                 verified += 1
             elif report.result == VerificationResult.POTENTIAL:
                 v.status = "potential"
-                v.ai_payload_result = "failed"
+                v.ai_payload_result = "uncertain"  # 不确定
+                v.ai_is_vulnerable = "uncertain"
             elif report.result == VerificationResult.FALSE_POS:
                 v.status = "false_positive"
                 v.ai_payload_result = "failed"
+                v.ai_is_vulnerable = "false"     # 误报
             else:
                 v.status = "potential"
                 v.ai_payload_result = "uncertain"

@@ -296,12 +296,15 @@ class AIVerifier:
                     vulns[idx]["ai_payload"] = report.verified_payload
                     vulns[idx]["ai_payload_result"] = "success"
                     vulns[idx]["ai_payload_evidence"] = report.evidence
+                    vulns[idx]["ai_is_vulnerable"] = "true"      # 确认漏洞
                 elif report.result == VerificationResult.POTENTIAL:
                     vulns[idx]["status"] = "potential"
                     vulns[idx]["ai_payload"] = report.verified_payload
-                    vulns[idx]["ai_payload_result"] = "failed"
+                    vulns[idx]["ai_payload_result"] = "uncertain"  # 不确定
                     vulns[idx]["ai_payload_evidence"] = report.evidence
+                    vulns[idx]["ai_is_vulnerable"] = "uncertain"
                 elif report.result == VerificationResult.FALSE_POS:
                     vulns[idx]["status"] = "false_positive"
+                    vulns[idx]["ai_is_vulnerable"] = "false"     # 误报
 
         return vulns
