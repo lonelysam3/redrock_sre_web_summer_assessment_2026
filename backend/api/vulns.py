@@ -404,16 +404,13 @@ def analyze_all_vulns():
                     if report.result == VerificationResult.CONFIRMED:
                         av.status = "confirmed"
                         av.ai_payload_result = "success"
+                        av.ai_is_vulnerable = "true"
                         verified += 1
-                    elif report.result == VerificationResult.POTENTIAL:
-                        av.status = "potential"
-                        av.ai_payload_result = "failed"
-                    elif report.result == VerificationResult.FALSE_POS:
-                        av.status = "false_positive"
-                        av.ai_payload_result = "failed"
                     else:
+                        # 攻击失败/无法确认 → AI 不确定
                         av.status = "potential"
-                        av.ai_payload_result = "uncertain"
+                        av.ai_payload_result = "failed"
+                        av.ai_is_vulnerable = "uncertain"
             db.session.commit()
     except Exception as e:
         print(f"[VERIFY] 自动验证失败: {e}")
@@ -525,13 +522,10 @@ def _verify_single_vuln(v: Vulnerability):
         if report.result == VerificationResult.CONFIRMED:
             v.status = "confirmed"
             v.ai_payload_result = "success"
-        elif report.result == VerificationResult.POTENTIAL:
-            v.status = "potential"
-            v.ai_payload_result = "failed"
-        elif report.result == VerificationResult.FALSE_POS:
-            v.status = "false_positive"
-            v.ai_payload_result = "failed"
+            v.ai_is_vulnerable = "true"
         else:
+            # 攻击失败/无法确认 → AI 不确定
             v.status = "potential"
-            v.ai_payload_result = "uncertain"
+            v.ai_payload_result = "failed"
+            v.ai_is_vulnerable = "uncertain"
         db.session.commit()

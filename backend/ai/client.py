@@ -35,8 +35,8 @@ VERIFY_SYSTEM_PROMPT = """你是一名资深渗透测试专家。
 
 ## 你的任务（只做验证，不修改任何代码）
 
-1. **验证漏洞** — 使用工具深入探索源码，判断漏洞是否真实可利用
-2. **生成 Payload** — 如果确认漏洞，给出精准的攻击载荷
+1. **构建攻击 Payload** — 对每个漏洞都必须构建最精准的攻击载荷，无论攻击是否成功
+2. **模拟攻击并判定** — 基于代码上下文模拟攻击过程，判断攻击能否成功
 
 ## 工作流程
 
@@ -45,23 +45,22 @@ VERIFY_SYSTEM_PROMPT = """你是一名资深渗透测试专家。
 3. 调用 trace_variable_flow 追踪关键变量的传播路径
 4. 调用 read_file_region 读取关键代码上下文
 5. 调用 search_project 跨文件搜索相关配置（如 WAF、过滤器）
-6. 综合分析后输出最终 JSON 判定结果
+6. 综合分析后输出最终 JSON：包含构建的 Payload 和攻击模拟结论
 
 ## 重要约束
 
 - **严禁修改任何源文件**（没有修复工具可用，也不要在结果里建议改动文件）
-- 只输出验证结论、Payload 和证据
+- 每个漏洞都必须给出 exploit_payload，即使攻击失败
 
 ## 判定标准
 
-- **confirmed**: 数据流完整、无可行的安全控制、Payload 确定可触发
-- **potential**: 存在风险但缺少关键证据（如不确定 WAF 配置）
-- **false_positive**: 代码有有效安全控制（参数化查询/白名单/强类型校验）
+- **confirmed**: 攻击 Payload 能成功触发漏洞
+- **uncertain**: 攻击失败，或无法确认攻击能成功（如存在 WAF/过滤/防护）
 
 ## 重要
 
 不要重复基础分析！如果漏洞已有 AI 分析结果（在上下文提供），直接基于它验证，
-不要再分析漏洞成因。专注于验证与 Payload 构建。"""
+不要再分析漏洞成因。专注于构建 Payload 与攻击模拟。"""
 
 VERIFY_TEMPLATE = """## 漏洞验证任务（不修改代码）
 
@@ -101,17 +100,21 @@ VERIFY_TEMPLATE = """## 漏洞验证任务（不修改代码）
 
 ---
 
-请使用工具探索代码，验证漏洞是否真实，然后输出 JSON：
+请使用工具探索代码，为漏洞构建攻击 Payload 并模拟攻击过程，然后输出 JSON：
 
 ```json
 {{
-    "verdict": "confirmed|potential|false_positive",
+    "verdict": "confirmed|uncertain",
     "confidence": 0.0-1.0,
-    "exploit_payload": "最有效的攻击 Payload",
+    "exploit_payload": "你构建的攻击 Payload（无论攻击是否成功都必须给出）",
     "payload_effect": "Payload 的预期效果",
-    "evidence": "验证证据（3-5 句话，引用具体的行号和代码）"
+    "evidence": "攻击模拟结果（3-5 句话，引用具体行号和代码，说明攻击是否成功及依据）"
 }}
 ```
+
+判定标准：
+- "confirmed": 攻击 Payload 能成功触发漏洞
+- "uncertain": 攻击失败，或无法确认攻击能成功（存在 WAF/过滤/防护等）
 """
 
 FIX_SYSTEM_PROMPT = """你是一名资深安全修复工程师。
