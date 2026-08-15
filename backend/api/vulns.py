@@ -396,14 +396,6 @@ def analyze_all_vulns():
                     except Exception:
                         source_code_map[v.file_path] = v.source_code or ""
 
-            # MCP 验证（候选 Payload 预构建 → AI 选择/精化）
-            from engine.ai_verifier import AIVerifier
-            from engine.payload_builder import PayloadBuilder
-            verifier = AIVerifier(client)
-            payload_sets = PayloadBuilder(client).build_payloads(vuln_dicts, source_code_map)
-            reports = verifier.verify(vuln_dicts, payload_sets, source_code_map,
-                                      project_path=proj_path, php_version=php_version)
-
             for report in reports:
                 if report.vuln_id < len(analyzed_vulns):
                     av = analyzed_vulns[report.vuln_id]
@@ -520,9 +512,7 @@ def _verify_single_vuln(v: Vulnerability):
     }
 
     verifier = AIVerifier(client)
-    from engine.payload_builder import PayloadBuilder
-    payload_sets = PayloadBuilder(client).build_payloads([vuln_dict], source_code_map)
-    reports = verifier.verify([vuln_dict], payload_sets, source_code_map,
+    reports = verifier.verify([vuln_dict], [], source_code_map,
                                project_path=project_path, php_version=php_version)
 
     if reports:

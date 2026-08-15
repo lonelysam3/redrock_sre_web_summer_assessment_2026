@@ -1027,11 +1027,9 @@ def _run_ai_verification_on_vulns(scan_id: int, project_path: str, client, log,
         }
         vuln_dicts.append(vd)
 
-    # MCP 工具驱动验证（只验证 + Payload，不生成修复）；PayloadBuilder 预构建候选
+    # MCP 工具驱动验证（只验证 + Payload，不生成修复）
     verifier = AIVerifier(client)
-    from engine.payload_builder import PayloadBuilder
-    payload_sets = PayloadBuilder(client).build_payloads(vuln_dicts, source_code_map)
-    reports = verifier.verify(vuln_dicts, payload_sets, source_code_map,
+    reports = verifier.verify(vuln_dicts, [], source_code_map,
                                project_path=project_path, php_version=php_version)
     log.write(f"[VERIFY] MCP verification reports: {len(reports)}\n")
     log.flush()

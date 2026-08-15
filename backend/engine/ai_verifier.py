@@ -153,12 +153,11 @@ class AIVerifier:
         reports = []
 
         for i, v in enumerate(vulns):
-            ps = payload_sets[i] if i < len(payload_sets) else None
+            file_path = v.get("file_path", "")
 
             if self.ai_client and self.ai_client.is_configured():
                 report = self._ai_verify_with_tools(v, source_code_map, i,
-                                                     project_path, php_version,
-                                                     payload_set=ps)
+                                                     project_path, php_version)
             else:
                 report = self._heuristic_verify(v, i)
 
@@ -171,27 +170,6 @@ class AIVerifier:
 
         return reports
 
-    @staticmethod
-    def _format_payload_candidates(ps) -> str:
-        """把 PayloadSet 格式化为提示词用的候选列表文本。"""
-        if not ps or not getattr(ps, "payloads", None):
-            return ""
-        lines = []
-        for p in ps.payloads[:6]:
-            lines.append(
-                f"- `{p.value}`（参数: {p.param_name or '-'}，"
-                f"预期: {p.expected_result or '-'}）"
-            )
-        return "\n".join(lines)
-
-    @staticmethod
-    def _best_candidate_payload(ps) -> tuple[str, str]:
-        """从候选 Payload 集中取第一个（AI 增强的排在前面时优先 AI 产物）。"""
-        if ps and getattr(ps, "payloads", None):
-            p = ps.payloads[0]
-            return p.value, p.description
-        return "", ""
-
     def _static_payload_fallback(self, vuln_type: str) -> tuple[str, str]:
         """静态 Payload 模板兜底：AI 未返回 payload 时保证每个漏洞都有 payload。"""
         from engine.payload_builder import PayloadBuilder
@@ -203,7 +181,7 @@ class AIVerifier:
 
     def _ai_verify_with_tools(self, vuln: dict, source_code_map: dict[str, str],
                                vuln_index: int, project_path: str = "",
-                               php_version: str = "", payload_set=None) -> VerificationReport:
+                               php_version: str = "") -> VerificationReport:
         """使用 MCP 工具进行深度验证（只验证 + 构建 Payload，不生成修复）。"""
         file_path = vuln.get("file_path", "")
         vuln_type = vuln.get("vuln_type", "")
@@ -213,15 +191,12 @@ class AIVerifier:
         if file_path and file_path in source_code_map:
             ctx = source_code_map[file_path][:6000]
 
-        candidates_text = self._format_payload_candidates(payload_set)
-
         try:
             result = self.ai_client.verify_with_tools(
                 vuln,
                 context_code=ctx,
                 php_version=php_version,
                 project_path=project_path,
-                payload_candidates=candidates_text,
             )
             if result and isinstance(result, dict):
                 verdict_str = result.get("verdict", "potential")
@@ -235,16 +210,15 @@ class AIVerifier:
                 }
                 verdict = verdict_map.get(verdict_str, VerificationResult.POTENTIAL)
 
-                # Payload 回退链：AI 产物 → 候选 Payload（AI 增强/静态）→ 静态模板
+                # Payload 确定性兜底：AI 不给就上静态模板，保证每个漏洞都有
                 payload = result.get("exploit_payload", "") or ""
                 effect = result.get("payload_effect", "") or ""
-                if not payload:
-                    payload, effect = self._best_candidate_payload(payload_set)
                 if not payload:
                     payload, effect = self._static_payload_fallback(vuln_type)
                 evidence = result.get("evidence", "") or ""
                 if not evidence:
-                    evidence = ("AI 未给出攻击模拟证据，已按不确定处理。")
+                    evidence = ("AI 未给出攻击模拟证据，已按不确定处理"
+                                "（Payload 使用静态模板构建）。")
 
                 return VerificationReport(
                     vuln_id=vuln_index,
