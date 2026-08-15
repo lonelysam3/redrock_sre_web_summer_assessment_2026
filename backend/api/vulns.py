@@ -355,7 +355,7 @@ def analyze_all_vulns():
             proj_path = ""
             try:
                 if analyzed_vulns[0].scan_task and analyzed_vulns[0].scan_task.project:
-                    proj_path = analyzed_vulns[0].scan_task.project.source_path or ""
+                    proj_path = analyzed_vulns[0].scan_task.project.repo_path or ""
             except Exception:
                 pass
 
@@ -498,11 +498,22 @@ def _verify_single_vuln(v: Vulnerability):
     try:
         if v.scan_task and v.scan_task.project:
             php_version = v.scan_task.project.php_version or ""
-            # 从文件路径推断项目根目录
-            import os as _os
-            project_path = _os.path.dirname(_os.path.dirname(v.file_path)) if v.file_path else ""
+            project_path = v.scan_task.project.repo_path or ""
     except Exception:
         pass
+    if not project_path and v.file_path:
+        # 回退：从漏洞文件向上找项目根（含 run.py/app.py/requirements.txt 的目录）
+        import os as _os
+        _d = _os.path.dirname(_os.path.abspath(v.file_path))
+        while True:
+            if any(_os.path.isfile(_os.path.join(_d, n))
+                   for n in ("run.py", "app.py", "requirements.txt")):
+                project_path = _d
+                break
+            _parent = _os.path.dirname(_d)
+            if _parent == _d:
+                break
+            _d = _parent
 
     vuln_dict = {
         "file_path": v.file_path,
