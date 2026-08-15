@@ -30,6 +30,7 @@
 import os
 import sys
 import threading
+import mimetypes
 from pathlib import Path
 from datetime import datetime
 from flask import Flask
@@ -121,6 +122,12 @@ def create_app() -> Flask:
     """
     # ---- 1. 创建 Flask 应用 ----
     app = Flask(__name__, template_folder="templates", static_folder="static")
+
+    # 注册字体 MIME 类型（Windows 下 Python 的 mimetypes 不认识 woff2/ttf，
+    # 否则静态字体会被当作 application/octet-stream 返回）
+    mimetypes.add_type("font/woff2", ".woff2")
+    mimetypes.add_type("font/woff", ".woff")
+    mimetypes.add_type("font/ttf", ".ttf")
 
     # ---- 2. 加载配置 ----
     app.config.from_object(Config)
